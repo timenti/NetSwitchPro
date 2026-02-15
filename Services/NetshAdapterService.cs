@@ -298,7 +298,6 @@ internal sealed class NetshAdapterService
             "loopback",
             "tunnel",
             "tap",
-            "tun",
             "wintun",
             "wireguard",
             "zerotier",
@@ -330,32 +329,42 @@ internal sealed class NetshAdapterService
             return true;
         }
 
-        if (hardwareInterface == false)
-        {
-            return true;
-        }
-
-        if (physicalAdapter == false)
-        {
-            return true;
-        }
-
-        if (isBluetooth && (hardwareInterface == true || physicalAdapter == true || pnpLooksPhysical))
-        {
-            return false;
-        }
-
-        if (hardwareInterface == true && physicalAdapter == true)
-        {
-            return false;
-        }
-
         if (pnpLooksPhysical)
         {
             return false;
         }
 
-        return reportedVirtual == true;
+        if (hardwareInterface == true && physicalAdapter != false)
+        {
+            return false;
+        }
+
+        if (physicalAdapter == true && hardwareInterface != false)
+        {
+            return false;
+        }
+
+        if (interfaceType == 6)
+        {
+            return false;
+        }
+
+        if (hardwareInterface == false && physicalAdapter == false)
+        {
+            return true;
+        }
+
+        if (physicalAdapter == false && !isBluetooth)
+        {
+            return true;
+        }
+
+        if (hardwareInterface == false && !isBluetooth)
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private static bool IsBluetoothAdapter(string displayName, string fullName, string? sourceType, string? pnpDeviceId, string? serviceName, string? manufacturer, uint? interfaceType)
