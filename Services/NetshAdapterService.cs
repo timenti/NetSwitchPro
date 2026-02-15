@@ -50,7 +50,7 @@ internal sealed class NetshAdapterService
 
     private static List<NetworkAdapterInfo> TryLoadFromPowerShell(Dictionary<uint, string> ipMap, Dictionary<string, WmiAdapterMetadata> metadataByName)
     {
-        const string script = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; Get-NetAdapter | Select-Object Name, InterfaceDescription, Status, ifIndex | ConvertTo-Json -Compress";
+        const string script = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; Get-NetAdapter | Select-Object Name, InterfaceDescription, Status, ifIndex, ifType | ConvertTo-Json -Compress";
         var output = RunPowerShell(script);
         if (string.IsNullOrWhiteSpace(output))
         {
@@ -78,6 +78,9 @@ internal sealed class NetshAdapterService
                 var index = row.TryGetProperty("ifIndex", out var i) && i.TryGetInt32(out var i32) && i32 >= 0
                     ? (uint)i32
                     : 0;
+                var ifType = row.TryGetProperty("ifType", out var t) && t.TryGetInt32(out var typeId) && typeId >= 0
+                    ? (uint?)typeId
+                    : null;
 
                 metadataByName.TryGetValue(name, out var metadata);
                 ipMap.TryGetValue(index, out var ipv4);
@@ -88,7 +91,7 @@ internal sealed class NetshAdapterService
                 var resolvedFullName = string.IsNullOrWhiteSpace(fullName)
                     ? metadata?.FullName ?? name
                     : fullName;
-                var type = metadata?.Type ?? "Unknown";
+                var type = ClassifyAdapterType(name, resolvedFullName, metadata?.Type, ifType ?? metadata?.AdapterTypeId);
                 var physicalAdapter = metadata?.PhysicalAdapter;
 
                 adapters.Add(new NetworkAdapterInfo(
@@ -98,7 +101,7 @@ internal sealed class NetshAdapterService
                     isEnabled,
                     isConnected,
                     ipv4,
-                    IsVirtualAdapter(name, resolvedFullName, type, physicalAdapter),
+                    IsVirtualAdapter(name, resolvedFullName, type, physicalAdapter, ifType ?? metadata?.AdapterTypeId),
                     IsBluetoothAdapter(name, resolvedFullName, type)));
             }
 
@@ -115,7 +118,7 @@ internal sealed class NetshAdapterService
         var adapters = new List<NetworkAdapterInfo>();
 
         using var searcher = new ManagementObjectSearcher(
-            "SELECT Index, NetConnectionID, Name, AdapterType, NetConnectionStatus, ConfigManagerErrorCode, PhysicalAdapter FROM Win32_NetworkAdapter");
+            "SELECT Index, NetConnectionID, Name, AdapterType, AdapterTypeID, NetConnectionStatus, ConfigManagerErrorCode, PhysicalAdapter FROM Win32_NetworkAdapter");
 
         foreach (ManagementObject adapter in searcher.Get())
         {
@@ -130,14 +133,11 @@ internal sealed class NetshAdapterService
             var connectionStatus = adapter["NetConnectionStatus"] as ushort?;
             var physicalAdapter = adapter["PhysicalAdapter"] as bool?;
             var configError = adapter["ConfigManagerErrorCode"] as uint?;
+            var adapterTypeId = adapter["AdapterTypeID"] as ushort?;
             var isDisabledByAdmin = configError == 22;
             var enabled = !isDisabledByAdmin;
             var isConnected = connectionStatus == 2;
-            var type = adapter["AdapterType"]?.ToString();
-            if (string.IsNullOrWhiteSpace(type))
-            {
-                type = "Unknown";
-            }
+            var type = ClassifyAdapterType(connectionName, fullName, adapter["AdapterType"]?.ToString(), adapterTypeId);
 
             ipMap.TryGetValue(index, out var ipv4);
 
@@ -148,7 +148,7 @@ internal sealed class NetshAdapterService
                 enabled,
                 isConnected,
                 ipv4,
-                IsVirtualAdapter(connectionName, fullName, type, physicalAdapter),
+                IsVirtualAdapter(connectionName, fullName, type, physicalAdapter, adapterTypeId),
                 IsBluetoothAdapter(connectionName, fullName, type)));
         }
 
@@ -160,7 +160,7 @@ internal sealed class NetshAdapterService
         var map = new Dictionary<string, WmiAdapterMetadata>(StringComparer.OrdinalIgnoreCase);
 
         using var searcher = new ManagementObjectSearcher(
-            "SELECT NetConnectionID, Name, AdapterType, PhysicalAdapter FROM Win32_NetworkAdapter");
+            "SELECT NetConnectionID, Name, AdapterType, AdapterTypeID, PhysicalAdapter FROM Win32_NetworkAdapter");
 
         foreach (ManagementObject adapter in searcher.Get())
         {
@@ -171,13 +171,9 @@ internal sealed class NetshAdapterService
             }
 
             var fullName = adapter["Name"]?.ToString() ?? connectionName;
-            var type = adapter["AdapterType"]?.ToString();
-            if (string.IsNullOrWhiteSpace(type))
-            {
-                type = "Unknown";
-            }
+            var type = ClassifyAdapterType(connectionName, fullName, adapter["AdapterType"]?.ToString(), adapter["AdapterTypeID"] as ushort?);
 
-            map[connectionName] = new WmiAdapterMetadata(fullName, type, adapter["PhysicalAdapter"] as bool?);
+            map[connectionName] = new WmiAdapterMetadata(fullName, type, adapter["PhysicalAdapter"] as bool?, adapter["AdapterTypeID"] as ushort?);
         }
 
         return map;
@@ -225,7 +221,7 @@ internal sealed class NetshAdapterService
         return null;
     }
 
-    private static bool IsVirtualAdapter(string displayName, string fullName, string type, bool? physicalAdapter)
+    private static bool IsVirtualAdapter(string displayName, string fullName, string type, bool? physicalAdapter, uint? interfaceType)
     {
         if (physicalAdapter == true)
         {
@@ -237,6 +233,11 @@ internal sealed class NetshAdapterService
             return true;
         }
 
+        if (interfaceType is 24 or 53 or 131)
+        {
+            return true;
+        }
+
         var text = NormalizeForMatch(displayName + " " + fullName + " " + type);
         return text.Contains("virtual") ||
                text.Contains("vmware") ||
@@ -244,7 +245,13 @@ internal sealed class NetshAdapterService
                text.Contains("hyper-v") ||
                text.Contains("hyperv") ||
                text.Contains("vethernet") ||
-               text.Contains("virtualethernet");
+               text.Contains("virtualethernet") ||
+               text.Contains("loopback") ||
+               text.Contains("tunnel") ||
+               text.Contains("tap") ||
+               text.Contains("tun") ||
+               text.Contains("wireguard") ||
+               text.Contains("zerotier");
     }
 
     private static bool IsBluetoothAdapter(string displayName, string fullName, string type)
@@ -261,6 +268,43 @@ internal sealed class NetshAdapterService
             .Replace('—', '-')
             .Replace('‑', '-')
             .Replace(" ", string.Empty);
+    }
+
+    private static string ClassifyAdapterType(string displayName, string fullName, string? sourceType, uint? interfaceType)
+    {
+        var normalized = NormalizeForMatch(displayName + " " + fullName + " " + sourceType);
+
+        if (normalized.Contains("bluetooth"))
+        {
+            return "Bluetooth";
+        }
+
+        if (normalized.Contains("wi-fi") || normalized.Contains("wifi") || normalized.Contains("wireless") || interfaceType == 71)
+        {
+            return "Wi-Fi";
+        }
+
+        if (normalized.Contains("loopback") || interfaceType == 24)
+        {
+            return "Loopback";
+        }
+
+        if (normalized.Contains("tunnel") || interfaceType == 131)
+        {
+            return "Tunnel";
+        }
+
+        if (interfaceType == 23)
+        {
+            return "PPP";
+        }
+
+        if (interfaceType == 6 || normalized.Contains("ethernet"))
+        {
+            return "Ethernet";
+        }
+
+        return string.IsNullOrWhiteSpace(sourceType) ? "Unknown" : sourceType;
     }
 
     private static Dictionary<uint, string> LoadIpv4ByInterfaceIndex()
@@ -288,5 +332,5 @@ internal sealed class NetshAdapterService
         return map;
     }
 
-    private sealed record WmiAdapterMetadata(string FullName, string Type, bool? PhysicalAdapter);
+    private sealed record WmiAdapterMetadata(string FullName, string Type, bool? PhysicalAdapter, ushort? AdapterTypeId);
 }
