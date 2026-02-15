@@ -50,7 +50,7 @@ internal sealed class NetshAdapterService
 
     private static List<NetworkAdapterInfo> TryLoadFromPowerShell(Dictionary<uint, string> ipMap, Dictionary<string, WmiAdapterMetadata> metadataByName)
     {
-        const string script = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; Get-NetAdapter | Select-Object Name, InterfaceDescription, Status, ifIndex, ifType | ConvertTo-Json -Compress";
+        const string script = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; Get-NetAdapter | Select-Object Name, InterfaceDescription, Status, ifIndex, ifType, InterfaceName, PnPDeviceID, Virtual, HardwareInterface, DriverDescription | ConvertTo-Json -Compress";
         var output = RunPowerShell(script);
         if (string.IsNullOrWhiteSpace(output))
         {
@@ -67,20 +67,21 @@ internal sealed class NetshAdapterService
             var adapters = new List<NetworkAdapterInfo>();
             foreach (var row in rows)
             {
-                var name = row.TryGetProperty("Name", out var n) ? n.GetString() : null;
+                var name = GetString(row, "Name");
                 if (string.IsNullOrWhiteSpace(name))
                 {
                     continue;
                 }
 
-                var fullName = row.TryGetProperty("InterfaceDescription", out var d) ? d.GetString() : null;
-                var status = row.TryGetProperty("Status", out var s) ? s.GetString() : null;
-                var index = row.TryGetProperty("ifIndex", out var i) && i.TryGetInt32(out var i32) && i32 >= 0
-                    ? (uint)i32
-                    : 0;
-                var ifType = row.TryGetProperty("ifType", out var t) && t.TryGetInt32(out var typeId) && typeId >= 0
-                    ? (uint?)typeId
-                    : null;
+                var fullName = GetString(row, "InterfaceDescription");
+                var status = GetString(row, "Status");
+                var index = GetUInt(row, "ifIndex") ?? 0;
+                var ifType = GetUInt(row, "ifType");
+                var hardwareInterface = GetBool(row, "HardwareInterface");
+                var isReportedVirtual = GetBool(row, "Virtual");
+                var pnpDeviceId = GetString(row, "PnPDeviceID");
+                var serviceName = GetString(row, "InterfaceName");
+                var driverDescription = GetString(row, "DriverDescription");
 
                 metadataByName.TryGetValue(name, out var metadata);
                 ipMap.TryGetValue(index, out var ipv4);
@@ -91,8 +92,26 @@ internal sealed class NetshAdapterService
                 var resolvedFullName = string.IsNullOrWhiteSpace(fullName)
                     ? metadata?.FullName ?? name
                     : fullName;
-                var type = ClassifyAdapterType(name, resolvedFullName, metadata?.Type, ifType ?? metadata?.AdapterTypeId);
-                var physicalAdapter = metadata?.PhysicalAdapter;
+
+                var effectiveIfType = ifType ?? metadata?.AdapterTypeId;
+                var effectivePnp = string.IsNullOrWhiteSpace(pnpDeviceId) ? metadata?.PnpDeviceId : pnpDeviceId;
+                var effectiveService = string.IsNullOrWhiteSpace(serviceName) ? metadata?.ServiceName : serviceName;
+                var effectiveManufacturer = metadata?.Manufacturer;
+
+                var isBluetooth = IsBluetoothAdapter(name, resolvedFullName, metadata?.Type, effectivePnp, effectiveService, effectiveManufacturer, effectiveIfType);
+                var isVirtual = IsVirtualAdapter(
+                    name,
+                    resolvedFullName,
+                    metadata?.Type,
+                    metadata?.PhysicalAdapter,
+                    effectiveIfType,
+                    isReportedVirtual,
+                    hardwareInterface,
+                    effectivePnp,
+                    effectiveService,
+                    driverDescription,
+                    isBluetooth);
+                var type = ClassifyAdapterType(name, resolvedFullName, metadata?.Type, effectiveIfType, isBluetooth, isVirtual);
 
                 adapters.Add(new NetworkAdapterInfo(
                     name,
@@ -101,8 +120,8 @@ internal sealed class NetshAdapterService
                     isEnabled,
                     isConnected,
                     ipv4,
-                    IsVirtualAdapter(name, resolvedFullName, type, physicalAdapter, ifType ?? metadata?.AdapterTypeId),
-                    IsBluetoothAdapter(name, resolvedFullName, type)));
+                    isVirtual,
+                    isBluetooth));
             }
 
             return adapters;
@@ -118,7 +137,7 @@ internal sealed class NetshAdapterService
         var adapters = new List<NetworkAdapterInfo>();
 
         using var searcher = new ManagementObjectSearcher(
-            "SELECT Index, NetConnectionID, Name, AdapterType, AdapterTypeID, NetConnectionStatus, ConfigManagerErrorCode, PhysicalAdapter FROM Win32_NetworkAdapter");
+            "SELECT Index, NetConnectionID, Name, AdapterType, AdapterTypeID, NetConnectionStatus, ConfigManagerErrorCode, PhysicalAdapter, PNPDeviceID, ServiceName, Manufacturer FROM Win32_NetworkAdapter");
 
         foreach (ManagementObject adapter in searcher.Get())
         {
@@ -134,22 +153,39 @@ internal sealed class NetshAdapterService
             var physicalAdapter = adapter["PhysicalAdapter"] as bool?;
             var configError = adapter["ConfigManagerErrorCode"] as uint?;
             var adapterTypeId = adapter["AdapterTypeID"] as ushort?;
+            var pnpDeviceId = adapter["PNPDeviceID"]?.ToString();
+            var serviceName = adapter["ServiceName"]?.ToString();
+            var manufacturer = adapter["Manufacturer"]?.ToString();
             var isDisabledByAdmin = configError == 22;
-            var enabled = !isDisabledByAdmin;
+            var isEnabled = !isDisabledByAdmin;
             var isConnected = connectionStatus == 2;
-            var type = ClassifyAdapterType(connectionName, fullName, adapter["AdapterType"]?.ToString(), adapterTypeId);
 
             ipMap.TryGetValue(index, out var ipv4);
+
+            var isBluetooth = IsBluetoothAdapter(connectionName, fullName, adapter["AdapterType"]?.ToString(), pnpDeviceId, serviceName, manufacturer, adapterTypeId);
+            var isVirtual = IsVirtualAdapter(
+                connectionName,
+                fullName,
+                adapter["AdapterType"]?.ToString(),
+                physicalAdapter,
+                adapterTypeId,
+                null,
+                null,
+                pnpDeviceId,
+                serviceName,
+                null,
+                isBluetooth);
+            var type = ClassifyAdapterType(connectionName, fullName, adapter["AdapterType"]?.ToString(), adapterTypeId, isBluetooth, isVirtual);
 
             adapters.Add(new NetworkAdapterInfo(
                 connectionName,
                 fullName,
                 type,
-                enabled,
+                isEnabled,
                 isConnected,
                 ipv4,
-                IsVirtualAdapter(connectionName, fullName, type, physicalAdapter, adapterTypeId),
-                IsBluetoothAdapter(connectionName, fullName, type)));
+                isVirtual,
+                isBluetooth));
         }
 
         return adapters;
@@ -160,7 +196,7 @@ internal sealed class NetshAdapterService
         var map = new Dictionary<string, WmiAdapterMetadata>(StringComparer.OrdinalIgnoreCase);
 
         using var searcher = new ManagementObjectSearcher(
-            "SELECT NetConnectionID, Name, AdapterType, AdapterTypeID, PhysicalAdapter FROM Win32_NetworkAdapter");
+            "SELECT NetConnectionID, Name, AdapterType, AdapterTypeID, PhysicalAdapter, PNPDeviceID, ServiceName, Manufacturer FROM Win32_NetworkAdapter");
 
         foreach (ManagementObject adapter in searcher.Get())
         {
@@ -171,9 +207,14 @@ internal sealed class NetshAdapterService
             }
 
             var fullName = adapter["Name"]?.ToString() ?? connectionName;
-            var type = ClassifyAdapterType(connectionName, fullName, adapter["AdapterType"]?.ToString(), adapter["AdapterTypeID"] as ushort?);
-
-            map[connectionName] = new WmiAdapterMetadata(fullName, type, adapter["PhysicalAdapter"] as bool?, adapter["AdapterTypeID"] as ushort?);
+            map[connectionName] = new WmiAdapterMetadata(
+                fullName,
+                adapter["AdapterType"]?.ToString(),
+                adapter["PhysicalAdapter"] as bool?,
+                adapter["AdapterTypeID"] as ushort?,
+                adapter["PNPDeviceID"]?.ToString(),
+                adapter["ServiceName"]?.ToString(),
+                adapter["Manufacturer"]?.ToString());
         }
 
         return map;
@@ -221,14 +262,20 @@ internal sealed class NetshAdapterService
         return null;
     }
 
-    private static bool IsVirtualAdapter(string displayName, string fullName, string type, bool? physicalAdapter, uint? interfaceType)
+    private static bool IsVirtualAdapter(
+        string displayName,
+        string fullName,
+        string? sourceType,
+        bool? physicalAdapter,
+        uint? interfaceType,
+        bool? reportedVirtual,
+        bool? hardwareInterface,
+        string? pnpDeviceId,
+        string? serviceName,
+        string? driverDescription,
+        bool isBluetooth)
     {
-        if (physicalAdapter == true)
-        {
-            return false;
-        }
-
-        if (physicalAdapter == false)
+        if (reportedVirtual == true)
         {
             return true;
         }
@@ -238,43 +285,94 @@ internal sealed class NetshAdapterService
             return true;
         }
 
-        var text = NormalizeForMatch(displayName + " " + fullName + " " + type);
-        return text.Contains("virtual") ||
-               text.Contains("vmware") ||
-               text.Contains("vbox") ||
-               text.Contains("hyper-v") ||
-               text.Contains("hyperv") ||
-               text.Contains("vethernet") ||
-               text.Contains("virtualethernet") ||
-               text.Contains("loopback") ||
-               text.Contains("tunnel") ||
-               text.Contains("tap") ||
-               text.Contains("tun") ||
-               text.Contains("wireguard") ||
-               text.Contains("zerotier");
+        var identity = NormalizeForMatch($"{displayName} {fullName} {sourceType} {serviceName} {driverDescription}");
+        var pnp = NormalizeForMatch(pnpDeviceId ?? string.Empty);
+
+        var hasVirtualMarkers = ContainsAny(identity,
+            "virtual",
+            "vethernet",
+            "hyper-v",
+            "hyperv",
+            "vmware",
+            "vbox",
+            "loopback",
+            "tunnel",
+            "tap",
+            "tun",
+            "wintun",
+            "wireguard",
+            "zerotier",
+            "tailscale",
+            "hamachi",
+            "openvpn",
+            "protonvpn",
+            "nordlynx",
+            "cloudflarewarp",
+            "radmin",
+            "radminvpn");
+
+        var pnpLooksVirtual = ContainsAny(pnp,
+            "root\\",
+            "swd\\",
+            "vms_mp",
+            "tap",
+            "wintun",
+            "wireguard",
+            "radminvpn",
+            "zerotier");
+
+        var pnpLooksPhysical = pnp.StartsWith("pci\\", StringComparison.Ordinal) ||
+                               pnp.StartsWith("usb\\", StringComparison.Ordinal) ||
+                               pnp.StartsWith("pcip\\", StringComparison.Ordinal);
+
+        if (hasVirtualMarkers || pnpLooksVirtual)
+        {
+            return true;
+        }
+
+        if (hardwareInterface == false)
+        {
+            return true;
+        }
+
+        if (physicalAdapter == false)
+        {
+            return true;
+        }
+
+        if (isBluetooth && (hardwareInterface == true || physicalAdapter == true || pnpLooksPhysical))
+        {
+            return false;
+        }
+
+        if (hardwareInterface == true && physicalAdapter == true)
+        {
+            return false;
+        }
+
+        if (pnpLooksPhysical)
+        {
+            return false;
+        }
+
+        return reportedVirtual == true;
     }
 
-    private static bool IsBluetoothAdapter(string displayName, string fullName, string type)
+    private static bool IsBluetoothAdapter(string displayName, string fullName, string? sourceType, string? pnpDeviceId, string? serviceName, string? manufacturer, uint? interfaceType)
     {
-        var text = NormalizeForMatch(displayName + " " + fullName + " " + type);
-        return text.Contains("bluetooth");
+        var text = NormalizeForMatch($"{displayName} {fullName} {sourceType} {serviceName} {manufacturer}");
+        var pnp = NormalizeForMatch(pnpDeviceId ?? string.Empty);
+
+        return ContainsAny(text, "bluetooth", "bth", "btpan") ||
+               pnp.StartsWith("bth\\", StringComparison.Ordinal) ||
+               interfaceType == 7;
     }
 
-    private static string NormalizeForMatch(string source)
+    private static string ClassifyAdapterType(string displayName, string fullName, string? sourceType, uint? interfaceType, bool isBluetooth, bool isVirtual)
     {
-        return source
-            .ToLowerInvariant()
-            .Replace('–', '-')
-            .Replace('—', '-')
-            .Replace('‑', '-')
-            .Replace(" ", string.Empty);
-    }
+        var normalized = NormalizeForMatch($"{displayName} {fullName} {sourceType}");
 
-    private static string ClassifyAdapterType(string displayName, string fullName, string? sourceType, uint? interfaceType)
-    {
-        var normalized = NormalizeForMatch(displayName + " " + fullName + " " + sourceType);
-
-        if (normalized.Contains("bluetooth"))
+        if (isBluetooth)
         {
             return "Bluetooth";
         }
@@ -302,6 +400,11 @@ internal sealed class NetshAdapterService
         if (interfaceType == 6 || normalized.Contains("ethernet"))
         {
             return "Ethernet";
+        }
+
+        if (isVirtual)
+        {
+            return "Virtual";
         }
 
         return string.IsNullOrWhiteSpace(sourceType) ? "Unknown" : sourceType;
@@ -332,5 +435,77 @@ internal sealed class NetshAdapterService
         return map;
     }
 
-    private sealed record WmiAdapterMetadata(string FullName, string Type, bool? PhysicalAdapter, ushort? AdapterTypeId);
+    private static string NormalizeForMatch(string source)
+    {
+        return source
+            .ToLowerInvariant()
+            .Replace('–', '-')
+            .Replace('—', '-')
+            .Replace('‑', '-')
+            .Replace(" ", string.Empty);
+    }
+
+    private static bool ContainsAny(string source, params string[] markers)
+    {
+        foreach (var marker in markers)
+        {
+            if (source.Contains(marker, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string? GetString(JsonElement row, string name)
+    {
+        return row.TryGetProperty(name, out var value) && value.ValueKind != JsonValueKind.Null
+            ? value.GetString()
+            : null;
+    }
+
+    private static uint? GetUInt(JsonElement row, string name)
+    {
+        if (!row.TryGetProperty(name, out var value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var i) && i >= 0)
+        {
+            return (uint)i;
+        }
+
+        return null;
+    }
+
+    private static bool? GetBool(JsonElement row, string name)
+    {
+        if (!row.TryGetProperty(name, out var value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.True)
+        {
+            return true;
+        }
+
+        if (value.ValueKind == JsonValueKind.False)
+        {
+            return false;
+        }
+
+        return null;
+    }
+
+    private sealed record WmiAdapterMetadata(
+        string FullName,
+        string? Type,
+        bool? PhysicalAdapter,
+        ushort? AdapterTypeId,
+        string? PnpDeviceId,
+        string? ServiceName,
+        string? Manufacturer);
 }
