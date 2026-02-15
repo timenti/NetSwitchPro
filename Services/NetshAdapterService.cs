@@ -275,6 +275,11 @@ internal sealed class NetshAdapterService
         string? driverDescription,
         bool isBluetooth)
     {
+        if (isBluetooth)
+        {
+            return false;
+        }
+
         if (reportedVirtual == true)
         {
             return true;
@@ -328,12 +333,6 @@ internal sealed class NetshAdapterService
         {
             return false;
         }
-
-        if (isBluetooth)
-        {
-            return false;
-        }
-
         if (interfaceType is 24 or 53 or 131)
         {
             return true;
