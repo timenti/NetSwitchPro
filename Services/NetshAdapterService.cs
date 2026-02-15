@@ -280,11 +280,6 @@ internal sealed class NetshAdapterService
             return true;
         }
 
-        if (interfaceType is 24 or 53 or 131)
-        {
-            return true;
-        }
-
         var identity = NormalizeForMatch($"{displayName} {fullName} {sourceType} {serviceName} {driverDescription}");
         var pnp = NormalizeForMatch(pnpDeviceId ?? string.Empty);
 
@@ -324,14 +319,29 @@ internal sealed class NetshAdapterService
                                pnp.StartsWith("usb\\", StringComparison.Ordinal) ||
                                pnp.StartsWith("pcip\\", StringComparison.Ordinal);
 
-        if (hasVirtualMarkers || pnpLooksVirtual)
+        if (pnpLooksPhysical)
+        {
+            return false;
+        }
+
+        if (interfaceType == 6)
+        {
+            return false;
+        }
+
+        if (isBluetooth)
+        {
+            return false;
+        }
+
+        if (interfaceType is 24 or 53 or 131)
         {
             return true;
         }
 
-        if (pnpLooksPhysical)
+        if (hasVirtualMarkers || pnpLooksVirtual)
         {
-            return false;
+            return true;
         }
 
         if (hardwareInterface == true && physicalAdapter != false)
@@ -340,11 +350,6 @@ internal sealed class NetshAdapterService
         }
 
         if (physicalAdapter == true && hardwareInterface != false)
-        {
-            return false;
-        }
-
-        if (interfaceType == 6)
         {
             return false;
         }
@@ -484,6 +489,11 @@ internal sealed class NetshAdapterService
         if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var i) && i >= 0)
         {
             return (uint)i;
+        }
+
+        if (value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out var parsed) && parsed >= 0)
+        {
+            return (uint)parsed;
         }
 
         return null;

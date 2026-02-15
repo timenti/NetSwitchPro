@@ -362,8 +362,8 @@ internal sealed class MainForm : Form
         {
             var all = await Task.Run(() => _adapterService.GetAdapters().ToList());
             _allAdapters = all;
-            _lastVirtualAdapterCount = all.Count(a => a.IsVirtual && (_showBluetoothCheck.Checked || !a.IsBluetooth));
-            _lastBluetoothAdapterCount = all.Count(a => a.IsBluetooth && (_showVirtualCheck.Checked || !a.IsVirtual));
+            _lastVirtualAdapterCount = all.Count(a => a.IsVirtual);
+            _lastBluetoothAdapterCount = all.Count(a => a.IsBluetooth);
             _adapters = all.Where(a => (_showVirtualCheck.Checked || !a.IsVirtual) && (_showBluetoothCheck.Checked || !a.IsBluetooth)).ToList();
             _lastFoundAdapterCount = _adapters.Count;
 
