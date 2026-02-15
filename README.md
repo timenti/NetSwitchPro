@@ -96,19 +96,16 @@ bin/Release/net8.0-windows/win-x64/publish/NetworkAdapterSwitcher.exe
 ## Где хранится settings.json
 
 Файл настроек больше не создаётся рядом с программой.
-Основной путь сохранения:
+Приложение сохраняет настройки сразу в несколько путей (для надёжного восстановления после перезапуска):
 
 ```text
-%TEMP%/NetSwitchPro/settings.json
-```
-
-Если в `%TEMP%` запись недоступна, используется резервный путь:
-
-```text
+%PROGRAMDATA%/NetSwitchPro/settings.json
+%LOCALAPPDATA%/Temp/NetSwitchPro/settings.json
 %LOCALAPPDATA%/NetSwitchPro/settings.json
 ```
 
-Файл помечается как скрытый (Hidden), чтобы не мешать пользователю.
+При запуске выбирается самый свежий файл настроек по времени изменения.
+Все файлы помечаются как скрытые (Hidden), чтобы не мешать пользователю.
 
 ## Проверка работы
 
