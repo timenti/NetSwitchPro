@@ -21,41 +21,74 @@ internal static class Program
     private static void RunWindow(bool startInTray)
     {
         using var identity = WindowsIdentity.GetCurrent();
-        var administrator = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+        bool administrator = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
         string prefix = $@"Local\NetSwitchPro.{identity.User?.Value}";
-        string elevated = prefix + ".elevated";
-        if (!administrator && TryShow(elevated + ".show", activate: !startInTray))
-            return;
-
-        string instance = administrator ? elevated : prefix + ".normal";
-        using var show = new EventWaitHandle(false, EventResetMode.AutoReset, instance + ".show");
-        using var mutex = new Mutex(true, instance, out bool owns);
-        if (!owns)
-        {
-            try { owns = mutex.WaitOne(0); }
-            catch (AbandonedMutexException) { owns = true; }
-        }
-        if (!owns)
+        string ownSlot = prefix + (administrator ? ".elevated" : ".normal");
+        string otherSlot = prefix + (administrator ? ".normal" : ".elevated");
+        var version = typeof(Program).Assembly.GetName().Version!;
+        using var launch = new Mutex(false, prefix + ".launch");
+        if (!RunningInstance.TryEnter(launch, TimeSpan.FromSeconds(8)))
         {
             if (!startInTray)
-                show.Set();
+                ShowLaunchMessage("NetSwitch Pro is finishing another launch.", "Другой запуск NetSwitch Pro ещё выполняется.",
+                    MessageBoxButtons.OK);
             return;
         }
+
+        Mutex? ownership = null;
+        RunningInstance? instance = null;
+        try
+        {
+            // A normal launch can show the elevated copy. An elevated launch replaces
+            // the normal copy of the same version so changing access still works.
+            if (HandledByPeer(otherSlot, version, startInTray, replaceEqual: administrator && !startInTray) ||
+                HandledByPeer(ownSlot, version, startInTray, replaceEqual: false))
+                return;
+
+            ownership = new Mutex(false, ownSlot);
+            while (!RunningInstance.TryEnter(ownership, TimeSpan.Zero))
+            {
+                if (HandledByPeer(ownSlot, version, startInTray, replaceEqual: false))
+                    return;
+            }
+
+            instance = new RunningInstance(ownSlot, version);
+        }
+        finally
+        {
+            launch.ReleaseMutex();
+            if (instance is null)
+                ownership?.Dispose();
+        }
+
+        if (instance is null || ownership is null)
+            return;
 
         try
         {
             ApplicationConfiguration.Initialize();
+            using var context = new ApplicationContext();
             using var main = new MainForm();
-            var listener = ThreadPool.RegisterWaitForSingleObject(show, (_, _) =>
+            try { StartupRegistration.UpdateForNewerVersion(Application.ExecutablePath); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            {
+                main.ReportStartupError(error);
+            }
+
+            void Queue(Action action)
             {
                 if (!main.IsHandleCreated || main.IsDisposed)
                     return;
-                try { main.BeginInvoke(main.RestoreMainWindow); }
+                try { main.BeginInvoke(action); }
                 catch (InvalidOperationException) { }
-            }, null, Timeout.Infinite, executeOnlyOnce: false);
-            using var context = new ApplicationContext();
+            }
+
             main.FormClosed += (_, _) => context.ExitThread();
             _ = main.Handle;
+            var showListener = ThreadPool.RegisterWaitForSingleObject(instance.Show, (_, _) => Queue(main.RestoreMainWindow),
+                null, Timeout.Infinite, executeOnlyOnce: false);
+            var retireListener = ThreadPool.RegisterWaitForSingleObject(instance.Retire, (_, _) => Queue(main.RequestUpgradeExit),
+                null, Timeout.Infinite, executeOnlyOnce: true);
             try
             {
                 if (startInTray)
@@ -64,22 +97,58 @@ internal static class Program
                     main.Show();
                 Application.Run(context);
             }
-            finally { listener.Unregister(null); }
+            finally
+            {
+                retireListener.Unregister(null);
+                showListener.Unregister(null);
+            }
         }
-        finally { mutex.ReleaseMutex(); }
+        finally
+        {
+            instance.Dispose();
+            ownership.ReleaseMutex();
+            ownership.Dispose();
+        }
     }
 
-    private static bool TryShow(string name, bool activate)
+    private static bool HandledByPeer(string name, Version version, bool startInTray, bool replaceEqual)
     {
-        try
+        while (!RunningInstance.WaitUntilFree(name, TimeSpan.Zero))
         {
-            if (!EventWaitHandle.TryOpenExisting(name, out var show))
+            var other = RunningInstance.ReadVersion(name);
+            if (other is not null && (other > version || (other == version && !replaceEqual)))
+            {
+                if (startInTray || RunningInstance.Signal(name, ".show"))
+                    return true;
+                if (RunningInstance.WaitUntilFree(name, TimeSpan.Zero))
+                    return false;
+                ShowLaunchMessage("NetSwitch Pro is already running. Open it from the notification area.",
+                    "NetSwitch Pro уже запущен. Откройте его из области уведомлений.", MessageBoxButtons.OK);
+                return true;
+            }
+
+            if (other is not null && RunningInstance.Signal(name, ".retire") &&
+                RunningInstance.WaitUntilFree(name, TimeSpan.FromSeconds(12)))
                 return false;
-            using (show)
-                return !activate || show.Set();
+
+            if (startInTray)
+                return true;
+
+            if (RunningInstance.WaitUntilFree(name, TimeSpan.Zero))
+                return false;
+            var decision = ShowLaunchMessage(
+                "Another copy is still running. Open its tray menu, choose Exit, then click Retry to start this version.",
+                "В трее ещё работает другая копия NetSwitch Pro. Выберите «Выход» в меню её значка, затем нажмите «Повторить», чтобы запустить эту версию.",
+                MessageBoxButtons.RetryCancel);
+            if (decision != DialogResult.Retry)
+                return true;
         }
-        catch (UnauthorizedAccessException) { return false; }
+        return false;
     }
+
+    private static DialogResult ShowLaunchMessage(string english, string russian, MessageBoxButtons buttons) =>
+        MessageBox.Show(System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ru" ? russian : english,
+            "NetSwitch Pro", buttons, MessageBoxIcon.Information);
 
     private static void WriteReadOnlyReport(string report)
     {

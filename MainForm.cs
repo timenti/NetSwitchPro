@@ -40,6 +40,7 @@ internal sealed class MainForm : Form
     private readonly TrayPanel tray = new();
     private TrayIconFeedback? iconFeedback;
     private bool allowExit;
+    private bool upgradeExitRequested;
     private string? trayFeedback;
     private IReadOnlyList<WifiAdapter> wireless = [];
     private IReadOnlyList<NetworkAdapterInfo> wired = [];
@@ -260,6 +261,7 @@ internal sealed class MainForm : Form
                 Render();
             else
                 SetBusy(false);
+            CloseForUpgradeWhenIdle();
         }
     }
 
@@ -534,6 +536,8 @@ internal sealed class MainForm : Form
         busy = value;
         refresh.Enabled = preferences.Enabled = elevate.Enabled = filters.Enabled = !value;
         Render();
+        if (!value && upgradeExitRequested)
+            BeginInvoke(CloseForUpgradeWhenIdle);
     }
 
     private async Task RunConnectionAsync(NetworkEndpoint? requested, bool fromTray)
@@ -682,6 +686,20 @@ internal sealed class MainForm : Form
         if (WindowState == FormWindowState.Minimized)
             WindowState = FormWindowState.Normal;
         Activate();
+    }
+
+    internal void ReportStartupError(Exception error) => WriteJournal(W(Word.StartupFailed), error.Message);
+
+    internal void RequestUpgradeExit()
+    {
+        upgradeExitRequested = true;
+        CloseForUpgradeWhenIdle();
+    }
+
+    private void CloseForUpgradeWhenIdle()
+    {
+        if (upgradeExitRequested && !busy && !refreshing && !IsDisposed)
+            ExitApplication();
     }
 
     private void ExitApplication()
@@ -897,8 +915,7 @@ internal sealed class MainForm : Form
             try
             {
                 bool registered = !string.IsNullOrWhiteSpace(startupCommand);
-                if (startup.Checked != registered || (startup.Checked && !string.Equals(startupCommand,
-                        StartupRegistration.CommandFor(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase)))
+                if (startup.Checked != registered)
                     StartupRegistration.SetEnabled(startup.Checked, Application.ExecutablePath);
             }
             catch (Exception error) when (IsStartupError(error))
