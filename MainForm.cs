@@ -42,6 +42,7 @@ internal sealed class MainForm : Form
     private readonly ToolTip tooltips = new();
     private readonly NotifyIcon notification = new() { Text = "NetSwitch Pro" };
     private readonly TrayPanel tray = new();
+    private TrayIconFeedback? iconFeedback;
     private bool allowExit;
     private string? trayFeedback;
     private IReadOnlyList<WifiAdapter> wireless = [];
@@ -95,9 +96,7 @@ internal sealed class MainForm : Form
         showBluetooth.CheckedChanged += (_, _) => ChangeFilters();
         Shown += async (_, _) =>
         {
-            hasShown = true;
-            notification.Icon = Icon;
-            notification.Visible = notification.Icon is not null;
+            InitializeTray();
             await RefreshAsync();
         };
         Activated += async (_, _) =>
@@ -108,10 +107,12 @@ internal sealed class MainForm : Form
         };
         notification.MouseClick += async (_, e) =>
         {
-            if (e.Button is MouseButtons.Left or MouseButtons.Right)
+            if (e.Button == MouseButtons.Left)
+                await RunTrayConnectionAsync(null);
+            else if (e.Button == MouseButtons.Right)
                 await OpenTrayAsync(Cursor.Position);
         };
-        tray.ProfileRequested += async target => await ConnectFromTrayAsync(target);
+        tray.ProfileRequested += async target => await RunTrayConnectionAsync(target);
         tray.OpenRequested += RestoreMainWindow;
         tray.ExitRequested += ExitApplication;
 
@@ -124,6 +125,19 @@ internal sealed class MainForm : Form
             }
         };
 
+    }
+
+    internal void InitializeTray()
+    {
+        if (hasShown)
+            return;
+        hasShown = true;
+        if (Icon is { } standard)
+        {
+            notification.Icon = standard;
+            iconFeedback = new TrayIconFeedback(notification, standard);
+            notification.Visible = true;
+        }
     }
 
     private void BuildLayout()
@@ -517,7 +531,7 @@ internal sealed class MainForm : Form
         }
     }
 
-    private async Task RunWifiAsync(Func<Task<WifiSwitchOutcome>> connect, string target, bool fromTray = false)
+    private async Task<bool> RunWifiAsync(Func<Task<WifiSwitchOutcome>> connect, string target, bool fromTray = false)
     {
         try
         {
@@ -532,6 +546,7 @@ internal sealed class MainForm : Form
             if (fromTray)
                 trayFeedback = outcome.Result == WifiSwitchResult.Connected ? null : message;
             WriteJournal(message, outcome.Diagnostic);
+            return outcome.Result == WifiSwitchResult.Connected;
         }
         catch (Exception ex)
         {
@@ -539,6 +554,7 @@ internal sealed class MainForm : Form
             if (fromTray)
                 trayFeedback = message;
             WriteJournal(message, ex.Message);
+            return false;
         }
     }
 
@@ -568,7 +584,8 @@ internal sealed class MainForm : Form
         string? note = busy ? (trayFeedback ?? W(Word.Busy)) : refreshing && saved.Length == 0
             ? W(Word.Busy) : trayFeedback ?? wifiReadError;
         return new TrayState(settings.Language, lightTheme, connectionName, active?.Connected == true, pair,
-            saved.Order(StringComparer.CurrentCultureIgnoreCase).ToArray(), busy || refreshing, note);
+            saved.Order(StringComparer.CurrentCultureIgnoreCase).ToArray(), busy || refreshing, note,
+            pair.Length == 2 ? WifiService.ChooseTarget(pair[0], pair[1], active?.ActiveProfile) : null);
     }
 
     private void UpdateTray()
@@ -577,23 +594,63 @@ internal sealed class MainForm : Form
             tray.UpdateState(TraySnapshot());
     }
 
-    private async Task ConnectFromTrayAsync(string target)
+    private async Task RunTrayConnectionAsync(string? destination)
     {
-        if (busy || refreshing || ActiveInterface() is not { } active ||
-            !active.Profiles.Contains(target, StringComparer.Ordinal))
+        if (busy || refreshing)
             return;
 
-        trayFeedback = W(Word.Connect) + " " + target + "…";
+        bool toggle = destination is null;
+        var firstProfile = settings.WifiA;
+        var secondProfile = settings.WifiB;
+        if (toggle && WifiService.ChooseTarget(firstProfile, secondProfile, null) is null)
+        {
+            var message = W(Word.PickWifi);
+            trayFeedback = message;
+            iconFeedback?.Complete(false, message);
+            notification.ShowBalloonTip(3000, "NetSwitch Pro", message, ToolTipIcon.Info);
+            UpdateTray();
+            return;
+        }
+
+        trayFeedback = W(Word.Busy);
         SetBusy(true);
+        iconFeedback?.Begin(trayFeedback);
+        long started = Environment.TickCount64;
+        bool success = false;
         try
         {
-            await RunWifiAsync(() => wifi.ConnectProfileAsync(active.Id, target), target, fromTray: true);
+            await ReadAsync(true);
+            var selected = ActiveInterface();
+            if (toggle)
+                destination = WifiService.ChooseTarget(firstProfile, secondProfile, selected?.ActiveProfile);
+            if (selected is null || destination is null || !selected.Profiles.Contains(destination, StringComparer.Ordinal) ||
+                (toggle && (!selected.Profiles.Contains(firstProfile!, StringComparer.Ordinal) ||
+                            !selected.Profiles.Contains(secondProfile!, StringComparer.Ordinal))))
+            {
+                trayFeedback = wifiReadError ?? (toggle ? W(Word.PickWifi) : W(Word.NoSavedNetworks));
+                WriteJournal(trayFeedback);
+                return;
+            }
+
+            string target = destination;
+            trayFeedback = W(Word.Switch) + " " + target + "…";
+            iconFeedback?.Begin(trayFeedback);
+            UpdateTray();
+            success = await RunWifiAsync(
+                () => toggle
+                    ? wifi.SwitchAsync(selected.Id, firstProfile!, secondProfile!, target)
+                    : wifi.ConnectProfileAsync(selected.Id, target),
+                target, fromTray: true);
         }
         finally
         {
             await Task.WhenAll(ReadAsync(true), ReadAsync(false));
             lastRead = Environment.TickCount64;
+            int remaining = (int)Math.Max(0, 350 - (Environment.TickCount64 - started));
+            if (remaining > 0)
+                await Task.Delay(remaining);
             SetBusy(false);
+            iconFeedback?.Complete(success, trayFeedback ?? W(Word.Connected));
         }
     }
 
@@ -617,8 +674,9 @@ internal sealed class MainForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
+        if (disposing && !IsDisposed)
         {
+            iconFeedback?.Dispose();
             notification.Dispose();
             tray.Dispose();
             wifi.Dispose();
@@ -760,13 +818,14 @@ internal sealed class MainForm : Form
 
     private void ShowPreferences()
     {
-        using var dialog = Dialog(W(Word.Settings), new Size(410, 183));
-        var layout = Grid(2, 3);
+        using var dialog = Dialog(W(Word.Settings), new Size(430, 242));
+        var layout = Grid(2, 4);
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Insert(2, new RowStyle(SizeType.Absolute, 53));
         var theme = MakePicker();
         theme.Margin = new Padding(0, 2, 0, 4);
         Fill(theme, [
@@ -785,7 +844,22 @@ internal sealed class MainForm : Form
         layout.Controls.Add(theme, 1, 0);
         layout.Controls.Add(new Label { Text = W(Word.Language), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
         layout.Controls.Add(languages, 1, 1);
-        layout.Controls.Add(apply, 1, 2);
+        var startup = new DesktopToggle { Text = W(Word.Autostart), Dock = DockStyle.Fill,
+            SwitchStyle = true, Margin = new Padding(0, 6, 0, 3) };
+        string? startupCommand = null;
+        try
+        {
+            startupCommand = StartupRegistration.ReadCommand();
+            startup.Checked = !string.IsNullOrWhiteSpace(startupCommand);
+        }
+        catch (Exception error) when (IsStartupError(error))
+        {
+            startup.Enabled = false;
+            WriteJournal(W(Word.StartupFailed), error.Message);
+        }
+        layout.Controls.Add(startup, 0, 2);
+        layout.SetColumnSpan(startup, 2);
+        layout.Controls.Add(apply, 1, 3);
         apply.Margin = new Padding(0, 9, 0, 0);
         dialog.AcceptButton = apply;
         dialog.Controls.Add(layout);
@@ -794,6 +868,21 @@ internal sealed class MainForm : Form
         dialog.ResumeLayout(true);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
+        if (startup.Enabled)
+        {
+            try
+            {
+                bool registered = !string.IsNullOrWhiteSpace(startupCommand);
+                if (startup.Checked != registered || (startup.Checked && !string.Equals(startupCommand,
+                        StartupRegistration.CommandFor(Application.ExecutablePath), StringComparison.OrdinalIgnoreCase)))
+                    StartupRegistration.SetEnabled(startup.Checked, Application.ExecutablePath);
+            }
+            catch (Exception error) when (IsStartupError(error))
+            {
+                WriteJournal(W(Word.StartupFailed), error.Message);
+                MessageBox.Show(this, W(Word.StartupFailed), "NetSwitch Pro", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
         settings.Theme = Selected(theme) ?? "system";
         lightTheme = settings.IsLight;
         settings.Language = Selected(languages) ?? "English";
@@ -802,6 +891,9 @@ internal sealed class MainForm : Form
         PaintTheme(this);
         SaveAndRender();
     }
+
+    private static bool IsStartupError(Exception error) =>
+        error is IOException or UnauthorizedAccessException or System.Security.SecurityException;
 
     private Form Dialog(string title, Size size)
     {

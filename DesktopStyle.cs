@@ -403,6 +403,9 @@ internal sealed class DesktopPicker : DesktopButton
 internal sealed class DesktopToggle : CheckBox
 {
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool SwitchStyle { get; init; }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal DesktopPalette Palette { get; set; } = DesktopPalette.Resolve(false);
 
     public DesktopToggle()
@@ -426,11 +429,27 @@ internal sealed class DesktopToggle : CheckBox
         g.Clear(Parent?.BackColor ?? Palette.Surface);
         DesktopDrawing.Shape(g, new Rectangle(0, 0, Width - 1, Height - 1), this.Px(10), Palette.Field,
             Focused && ShowFocusCues ? Palette.Signal : Palette.Line);
-        int dotsize = this.Px(10);
-        var marker = new Rectangle(this.Px(10), (Height - dotsize) / 2, dotsize, dotsize);
-        DesktopDrawing.Shape(g, marker, dotsize, Checked ? Palette.Signal : Palette.Field,
-            Checked ? null : Palette.Muted);
-        var text = new Rectangle(this.Px(26), 0, Width - this.Px(33), Height);
+        Rectangle text;
+        if (SwitchStyle)
+        {
+            int height = this.Px(19), width = this.Px(36);
+            var track = new Rectangle(Width - width - this.Px(12), (Height - height) / 2, width, height);
+            Color fill = Checked && Enabled ? Palette.Accent : Palette.Hover;
+            DesktopDrawing.Shape(g, track, height / 2, fill, Palette.Line);
+            int knob = this.Px(13), gap = this.Px(3);
+            var marker = new Rectangle(Checked ? track.Right - knob - gap : track.X + gap,
+                track.Y + (height - knob) / 2, knob, knob);
+            DesktopDrawing.Shape(g, marker, knob / 2, Checked ? Palette.AccentInk : Palette.Muted);
+            text = new Rectangle(this.Px(12), 0, Math.Max(1, track.Left - this.Px(23)), Height);
+        }
+        else
+        {
+            int dotsize = this.Px(10);
+            var marker = new Rectangle(this.Px(10), (Height - dotsize) / 2, dotsize, dotsize);
+            DesktopDrawing.Shape(g, marker, dotsize, Checked ? Palette.Signal : Palette.Field,
+                Checked ? null : Palette.Muted);
+            text = new Rectangle(this.Px(26), 0, Width - this.Px(33), Height);
+        }
         TextRenderer.DrawText(g, Text, Font, text, Enabled ? Palette.Ink : Palette.Muted,
             TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine |
             TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);

@@ -2,7 +2,7 @@ namespace NetworkAdapterSwitcher;
 
 internal sealed record TrayState(
     string Language, bool IsLight, string Connection, bool Connected, string[] Pair, string[] Saved,
-    bool Busy, string? Feedback);
+    bool Busy, string? Feedback, string? Target);
 
 internal sealed class TrayPanel : Form
 {
@@ -14,13 +14,14 @@ internal sealed class TrayPanel : Form
     private readonly Label feedback = Label(9);
     private readonly Label pageNumber = Label(9);
     private readonly DesktopButton[] profiles = Enumerable.Range(0, PageSize).Select(_ => Button(ButtonAppearance.Outline)).ToArray();
+    private readonly DesktopButton switchPair = Button(ButtonAppearance.Primary);
     private readonly DesktopButton all = Button();
     private readonly DesktopButton previous = Button();
     private readonly DesktopButton next = Button();
     private readonly DesktopButton open = Button();
     private readonly DesktopButton exit = Button();
     private readonly ToolTip tips = new();
-    private TrayState state = new("English", false, "", false, [], [], true, null);
+    private TrayState state = new("English", false, "", false, [], [], true, null, null);
     private DesktopPalette palette = DesktopPalette.Resolve(false);
     private Point anchor;
     private bool showAll;
@@ -41,7 +42,12 @@ internal sealed class TrayPanel : Form
         TopMost = true;
         DoubleBuffered = true;
 
-        Controls.AddRange([caption, connection, section, .. profiles, all, previous, pageNumber, next, feedback, open, exit]);
+        Controls.AddRange([caption, connection, switchPair, section, .. profiles, all, previous, pageNumber, next, feedback, open, exit]);
+        switchPair.Click += (_, _) =>
+        {
+            if (!state.Busy && state.Target is { } target)
+                ProfileRequested?.Invoke(target);
+        };
         foreach (var row in profiles)
             row.Click += (_, _) =>
             {
@@ -121,6 +127,12 @@ internal sealed class TrayPanel : Form
             Place(connection, pad, y, inner, 33);
             tips.SetToolTip(connection, state.Connection);
             y += this.Px(41);
+
+            switchPair.Text = state.Target is { } targetName ? W(Word.Switch) + " " + targetName : W(Word.SwitchPair);
+            tips.SetToolTip(switchPair, state.Target is null ? W(Word.PickWifi) : switchPair.Text);
+            switchPair.Enabled = state.Target is not null && !state.Busy;
+            Place(switchPair, pad, y, inner, 41);
+            y += this.Px(51);
 
             section.Text = expanded ? W(Word.SavedNetworks) : W(Word.PairNetworks);
             Place(section, pad, y, inner, 23);

@@ -15,16 +15,16 @@ internal static class Program
             return;
         }
 
-        RunWindow(args is ["--adapters"]);
+        RunWindow(args is ["--adapters"], args is [StartupRegistration.TrayArgument]);
     }
 
-    private static void RunWindow(bool forceAdapters)
+    private static void RunWindow(bool forceAdapters, bool startInTray)
     {
         using var identity = WindowsIdentity.GetCurrent();
         var administrator = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
         string prefix = $@"Local\NetSwitchPro.{identity.User?.Value}";
         string elevated = prefix + ".elevated";
-        if (!administrator && TryShow(elevated + ".show"))
+        if (!administrator && TryShow(elevated + ".show", activate: !startInTray))
             return;
 
         string instance = administrator ? elevated : prefix + ".normal";
@@ -37,7 +37,8 @@ internal static class Program
         }
         if (!owns)
         {
-            show.Set();
+            if (!startInTray)
+                show.Set();
             return;
         }
 
@@ -52,20 +53,30 @@ internal static class Program
                 try { main.BeginInvoke(main.RestoreMainWindow); }
                 catch (InvalidOperationException) { }
             }, null, Timeout.Infinite, executeOnlyOnce: false);
-            try { Application.Run(main); }
+            using var context = new ApplicationContext();
+            main.FormClosed += (_, _) => context.ExitThread();
+            _ = main.Handle;
+            try
+            {
+                if (startInTray)
+                    main.BeginInvoke(main.InitializeTray);
+                else
+                    main.Show();
+                Application.Run(context);
+            }
             finally { listener.Unregister(null); }
         }
         finally { mutex.ReleaseMutex(); }
     }
 
-    private static bool TryShow(string name)
+    private static bool TryShow(string name, bool activate)
     {
         try
         {
             if (!EventWaitHandle.TryOpenExisting(name, out var show))
                 return false;
             using (show)
-                return show.Set();
+                return !activate || show.Set();
         }
         catch (UnauthorizedAccessException) { return false; }
     }
