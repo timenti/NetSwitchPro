@@ -1,10 +1,12 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.Win32;
 
 namespace NetworkAdapterSwitcher.Services;
 
 internal sealed class AppSettings
 {
-    public string Theme { get; set; } = "dark";
+    public string Theme { get; set; } = "system";
     public string Language { get; set; } = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ru" ? "Russian" : "English";
     public bool ShowVirtual { get; set; }
     public bool ShowBluetooth { get; set; }
@@ -16,7 +18,22 @@ internal sealed class AppSettings
     public Guid? WifiAdapterId { get; set; }
     public string? WifiA { get; set; }
     public string? WifiB { get; set; }
-    public bool IsLight => Theme.Equals("light", StringComparison.OrdinalIgnoreCase);
+    [JsonIgnore]
+    public bool IsLight => Theme switch
+    {
+        "light" => true,
+        "dark" => false,
+        _ => WindowsUsesLightApps()
+    };
+
+    private static bool WindowsUsesLightApps()
+    {
+        const string key = @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+        try { return Registry.GetValue(key, "AppsUseLightTheme", 1) is not 0; }
+        catch (System.Security.SecurityException) { return true; }
+        catch (UnauthorizedAccessException) { return true; }
+        catch (IOException) { return true; }
+    }
 
     private static string Local => Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
     private static string FilePath => Path.Combine(Local, "NetSwitchPro", "settings.v2.json");
@@ -36,7 +53,12 @@ internal sealed class AppSettings
                 if (!File.Exists(path)) continue;
                 if (JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(path)) is { } found)
                 {
-                    found.Theme ??= "dark";
+                    found.Theme = found.Theme?.ToLowerInvariant() switch
+                    {
+                        "dark" => "dark",
+                        "light" => "light",
+                        _ => "system"
+                    };
                     found.Language ??= "English";
                     if (path != FilePath)
                         found.ShowAdapters = found.AdapterA is not null && found.AdapterB is not null;

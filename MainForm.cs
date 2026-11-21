@@ -24,6 +24,7 @@ internal sealed class MainForm : Form
     private readonly Label hint = TextLabel(10, "muted");
     private readonly Label status = TextLabel(10, "muted");
     private readonly DesktopButton wifiTab = MakeButton(ButtonAppearance.Segment, "");
+    private readonly ModeSelector modes;
     private readonly DesktopButton adapterTab = MakeButton(ButtonAppearance.Segment, "");
     private readonly DesktopButton refresh = MakeButton(glyph: "");
     private readonly DesktopButton history = MakeButton(glyph: "");
@@ -44,12 +45,17 @@ internal sealed class MainForm : Form
     private bool wifiMode;
     private bool busy;
     private bool hasShown;
+    private bool refreshing;
+    private long lastRead;
     private bool binding;
-    private string? readError;
+    private string? wifiReadError, adapterReadError;
+    private bool lightTheme;
 
     public MainForm(bool forceAdapters)
     {
         wifiMode = !forceAdapters && !settings.ShowAdapters;
+        lightTheme = settings.IsLight;
+        modes = new ModeSelector(wifiTab, adapterTab) { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 13) };
         SuspendLayout();
         Text = "NetSwitch Pro";
         AutoScaleDimensions = new SizeF(96, 96);
@@ -66,8 +72,9 @@ internal sealed class MainForm : Form
         PaintTheme(this);
         ResumeLayout(true);
 
-        wifiTab.Click += async (_, _) => await SetModeAsync(true);
-        adapterTab.Click += async (_, _) => await SetModeAsync(false);
+        wifiTab.Click += (_, _) => SetMode(true);
+        adapterTab.Click += (_, _) => SetMode(false);
+        modes.ModeRequested += SetMode;
         refresh.Click += async (_, _) => await RefreshAsync();
         history.Click += (_, _) => ShowJournal();
         preferences.Click += (_, _) => ShowPreferences();
@@ -89,10 +96,11 @@ internal sealed class MainForm : Form
         };
         Activated += async (_, _) =>
         {
-            if (hasShown)
-                await RefreshAsync();
+            UpdateSystemTheme();
+            if (hasShown && Environment.TickCount64 - lastRead >= 6000)
+                await RefreshAsync(background: true);
         };
-        FormClosing += (_, e) => e.Cancel = busy && e.CloseReason == CloseReason.UserClosing;
+        FormClosing += (_, e) => e.Cancel = (busy || refreshing) && e.CloseReason == CloseReason.UserClosing;
         FormClosed += (_, _) => { wifi.Dispose(); tooltips.Dispose(); };
     }
 
@@ -128,15 +136,7 @@ internal sealed class MainForm : Form
             header.GetControlFromPosition(i, 0)!.Margin = new Padding(5, 6, 0, 6);
         root.Controls.Add(header, 0, 0);
 
-        var tabs = Surface(2, 1);
-        tabs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        tabs.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        tabs.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        tabs.Padding = new Padding(4);
-        tabs.Margin = new Padding(0, 0, 0, 13);
-        tabs.Controls.Add(wifiTab, 0, 0);
-        tabs.Controls.Add(adapterTab, 1, 0);
-        root.Controls.Add(tabs, 0, 1);
+        root.Controls.Add(modes, 0, 1);
 
         connection.Padding = new Padding(15, 12, 15, 10);
         connection.Margin = new Padding(0, 0, 0, 12);
@@ -241,44 +241,60 @@ internal sealed class MainForm : Form
         action.Text = W(Word.Switch);
     }
 
-    private async Task SetModeAsync(bool showWifi)
+    private void SetMode(bool showWifi)
     {
         if (busy || wifiMode == showWifi)
             return;
         wifiMode = showWifi;
         settings.ShowAdapters = !showWifi;
+        Render();
         SaveSettings();
-        await RefreshAsync();
     }
 
-    private async Task RefreshAsync()
+    private async Task RefreshAsync(bool background = false)
     {
-        if (busy)
+        if (busy || refreshing)
             return;
-        SetBusy(true);
-        try { await ReadAsync(); }
-        finally { SetBusy(false); }
+        refreshing = true;
+        if (background)
+            action.Enabled = false;
+        else
+            SetBusy(true);
+        try { await Task.WhenAll(ReadAsync(true), ReadAsync(false)); }
+        finally
+        {
+            refreshing = false;
+            lastRead = Environment.TickCount64;
+            if (background)
+                Render();
+            else
+                SetBusy(false);
+        }
     }
 
-    private async Task ReadAsync()
+    private async Task ReadAsync(bool readWifi)
     {
-        readError = null;
+        string? error = null;
         try
         {
-            if (wifiMode)
+            if (readWifi)
                 wireless = await Task.Run(() => wifi.GetAdapters());
             else
                 wired = await Task.Run(adapters.GetAdapters);
         }
         catch (Exception ex)
         {
-            if (wifiMode)
+            if (readWifi)
                 wireless = [];
             else
                 wired = [];
-            readError = Say("Не удалось прочитать данные Windows. См. журнал.", "Windows data is unavailable. See activity.");
+            error = Say("Не удалось прочитать данные Windows. См. журнал.", "Windows data is unavailable. See activity.");
             WriteJournal(ex.Message, showStatus: false);
         }
+        if (readWifi)
+            wifiReadError = error;
+        else
+            adapterReadError = error;
     }
 
     private WifiAdapter? ActiveInterface()
@@ -310,10 +326,9 @@ internal sealed class MainForm : Form
         {
             wifiTab.Selected = wifiMode;
             adapterTab.Selected = !wifiMode;
-            wifiTab.Invalidate();
-            adapterTab.Invalidate();
+            modes.SelectMode(wifiMode, hasShown);
             first.Picker.Enabled = second.Picker.Enabled = !busy;
-            status.Text = readError ?? (journal.Count > 0 ? journal[0] : "");
+            status.Text = (wifiMode ? wifiReadError : adapterReadError) ?? (journal.Count > 0 ? journal[0] : "");
             if (wifiMode)
                 RenderWifi();
             else
@@ -323,6 +338,8 @@ internal sealed class MainForm : Form
                 action.Text = W(Word.Busy);
                 action.Enabled = false;
             }
+            if (refreshing)
+                action.Enabled = false;
             ShowFeedback();
             action.Invalidate();
         }
@@ -367,7 +384,7 @@ internal sealed class MainForm : Form
             : profiles.Length < 2
                 ? Say("Для пары нужны две сети, сохранённые в настройках Wi-Fi Windows.", "Save two Wi-Fi networks in Windows first.")
                 : target is null ? W(Word.PickWifi) : "";
-        SetAction(target, W(Word.Connect));
+        SetAction(target, Say("Переключить Wi-Fi", "Switch Wi-Fi"));
     }
 
     private string WifiDetail(string? selected, string? active) =>
@@ -401,40 +418,38 @@ internal sealed class MainForm : Form
         tooltips.SetToolTip(second.Detail, b?.Description ?? "");
         var target = a is not null && b is not null && a.Id != b.Id ? AdapterSwitch.ChooseTarget(a, b).Name : null;
         hint.Text = target is null ? W(Word.PickAdapters) : W(Word.AdapterHint);
-        SetAction(target, W(Word.Switch));
+        SetAction(target, Say("Переключить адаптер", "Switch adapter"));
         action.Enabled = administrator && target is not null;
-        if (target is null)
-            action.Text = Say("Переключить адаптер", "Switch adapter");
     }
 
     private void SetSignal(bool active)
     {
         signal.Tag = active ? "signal" : "muted";
-        signal.ForeColor = active ? DesktopPalette.Resolve(settings.IsLight).Signal : DesktopPalette.Resolve(settings.IsLight).Muted;
+        signal.ForeColor = active ? DesktopPalette.Resolve(lightTheme).Signal : DesktopPalette.Resolve(lightTheme).Muted;
     }
 
     private string AdapterDetail(NetworkAdapterInfo? item) =>
         item is null ? "" : (item.Connected ? W(Word.Connected) : item.Enabled ? W(Word.Enabled) : W(Word.Disabled))
             + "   ·   " + item.Type + (item.IPv4 is { } address ? "   ·   " + address : "");
 
-    private void SetAction(string? target, string verb)
+    private void SetAction(string? target, string placeholder)
     {
         action.Enabled = target is not null;
-        action.Text = target is null ? verb : verb + " " + target;
+        action.Text = target is null ? placeholder : W(Word.Switch) + " " + target;
         tooltips.SetToolTip(action, target ?? "");
     }
 
     private void SetBusy(bool value)
     {
         busy = value;
-        wifiTab.Enabled = adapterTab.Enabled = refresh.Enabled = preferences.Enabled = !value;
+        modes.Enabled = refresh.Enabled = preferences.Enabled = !value;
         wifiInterface.Enabled = elevate.Enabled = filters.Enabled = !value;
         Render();
     }
 
     private async Task SwitchAsync()
     {
-        if (busy || !action.Enabled)
+        if (busy || refreshing || !action.Enabled)
             return;
         var selected = ActiveInterface();
         string? firstSelection = Selected(first.Picker), secondSelection = Selected(second.Picker);
@@ -474,7 +489,8 @@ internal sealed class MainForm : Form
         }
         finally
         {
-            await ReadAsync();
+            await Task.WhenAll(ReadAsync(true), ReadAsync(false));
+            lastRead = Environment.TickCount64;
             SetBusy(false);
         }
     }
@@ -567,17 +583,38 @@ internal sealed class MainForm : Form
 
     private void ShowJournal()
     {
-        using var dialog = Dialog(W(Word.Log), new Size(630, 340));
-        var text = new TextBox
-        {
-            Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
-            Dock = DockStyle.Fill, BorderStyle = BorderStyle.None,
-            Text = journal.Count == 0 ? Say("Событий пока нет.", "No activity yet.") : string.Join(Environment.NewLine, journal)
-        };
+        bool empty = journal.Count == 0;
+        string body = empty ? W(Word.EmptyLog) : string.Join(Environment.NewLine, journal);
+        int height = empty ? 78 : Math.Clamp(58 + journal.Count * 25, 130, 316);
+        using var dialog = Dialog(W(Word.Log), new Size(empty ? 365 : 540, height));
+        dialog.Padding = new Padding(9);
+
+        var content = Grid(2, empty ? 1 : 2);
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        content.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 142));
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var activity = new JournalView(body) { Dock = DockStyle.Fill, Margin = Padding.Empty };
         var panel = Surface(1, 1);
-        panel.Padding = new Padding(13);
-        panel.Controls.Add(text, 0, 0);
-        dialog.Controls.Add(panel);
+        panel.Padding = new Padding(8, 5, 8, 5);
+        panel.Controls.Add(activity, 0, 0);
+        content.Controls.Add(panel, 0, 0);
+        content.SetColumnSpan(panel, 2);
+        if (!empty)
+        {
+            content.RowStyles.Add(new RowStyle(SizeType.Absolute, 39));
+            var copy = MakeButton(ButtonAppearance.Outline);
+            copy.Text = W(Word.CopyLog);
+            copy.Margin = new Padding(0, 6, 0, 0);
+            copy.Click += (_, _) =>
+            {
+                try { Clipboard.SetText(body); }
+                catch (ExternalException) { return; }
+                copy.Text = W(Word.LogCopied);
+            };
+            content.Controls.Add(copy, 1, 1);
+        }
+
+        dialog.Controls.Add(content);
         PaintTheme(dialog);
         dialog.HandleCreated += (_, _) => SetTitleBar(dialog);
         dialog.ResumeLayout(true);
@@ -595,7 +632,10 @@ internal sealed class MainForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         var theme = MakePicker();
         theme.Margin = new Padding(0, 2, 0, 4);
-        Fill(theme, [new DesktopChoice("dark", W(Word.Dark)), new DesktopChoice("light", W(Word.Light))], settings.IsLight ? "light" : "dark");
+        Fill(theme, [
+            new DesktopChoice("system", W(Word.SystemTheme)),
+            new DesktopChoice("dark", W(Word.Dark)),
+            new DesktopChoice("light", W(Word.Light))], settings.Theme);
         theme.AccessibleName = W(Word.Theme);
         var languages = MakePicker();
         languages.Margin = theme.Margin;
@@ -617,7 +657,8 @@ internal sealed class MainForm : Form
         dialog.ResumeLayout(true);
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
-        settings.Theme = Selected(theme) ?? "dark";
+        settings.Theme = Selected(theme) ?? "system";
+        lightTheme = settings.IsLight;
         settings.Language = Selected(languages) ?? "English";
         UpdateLabels();
         Render();
@@ -663,6 +704,10 @@ internal sealed class MainForm : Form
             button.Palette = palette;
         if (control is DesktopToggle toggle)
             toggle.Palette = palette;
+        if (control is ModeSelector selector)
+            selector.Palette = palette;
+        if (control is JournalView activity)
+            activity.Palette = palette;
         if (control is Form form && form.IsHandleCreated)
             SetTitleBar(form);
         foreach (Control child in control.Controls)
@@ -670,9 +715,30 @@ internal sealed class MainForm : Form
         control.Invalidate();
     }
 
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+        if (m.Msg is 0x001A or 0x031A)
+            UpdateSystemTheme();
+    }
+
+    private void UpdateSystemTheme()
+    {
+        if (!hasShown || settings.Theme != "system")
+            return;
+        bool next = settings.IsLight;
+        if (next == lightTheme)
+            return;
+
+        lightTheme = next;
+        PaintTheme(this);
+        foreach (var dialog in OwnedForms)
+            PaintTheme(dialog);
+    }
+
     private void SetTitleBar(Form form)
     {
-        int dark = settings.IsLight ? 0 : 1;
+        int dark = lightTheme ? 0 : 1;
         _ = DwmSetWindowAttribute(form.Handle, 20, ref dark, sizeof(int));
     }
 
@@ -682,7 +748,7 @@ internal sealed class MainForm : Form
         return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
     }
 
-    private static TableLayoutPanel Grid(int columns, int rows) => new()
+    private static TableLayoutPanel Grid(int columns, int rows) => new LayoutGrid()
     {
         Dock = DockStyle.Fill, Margin = Padding.Empty, ColumnCount = columns, RowCount = rows
     };

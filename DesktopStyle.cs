@@ -61,9 +61,13 @@ internal static class DesktopDrawing
     }
 }
 
-internal sealed class SurfaceGrid : TableLayoutPanel
+internal class LayoutGrid : TableLayoutPanel
 {
-    public SurfaceGrid() => DoubleBuffered = true;
+    public LayoutGrid() => DoubleBuffered = true;
+}
+
+internal sealed class SurfaceGrid : LayoutGrid
+{
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
@@ -106,7 +110,33 @@ internal class DesktopButton : Button
 
     protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); hovered = true; Invalidate(); }
     protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hovered = false; pressed = false; Invalidate(); }
-    protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); pressed = e.Button == MouseButtons.Left; Invalidate(); }
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left && Parent is ModeSelector selector)
+        {
+            selector.BeginMouse(PointToScreen(e.Location));
+            return;
+        }
+        base.OnMouseDown(e);
+        pressed = e.Button == MouseButtons.Left;
+        Invalidate();
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (Parent is not ModeSelector selector || !selector.HandleTouch(ref m))
+            base.WndProc(ref m);
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (Parent is ModeSelector selector && keyData is Keys.Left or Keys.Right)
+        {
+            selector.RequestMode(keyData == Keys.Left);
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
     protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); pressed = false; Invalidate(); }
     protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
     protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
@@ -115,7 +145,10 @@ internal class DesktopButton : Button
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(Parent?.BackColor ?? Palette.Window);
+        if (Parent is ModeSelector selector)
+            selector.PaintTrack(g, Left, Top);
+        else
+            g.Clear(Parent?.BackColor ?? Palette.Window);
         bool over = Enabled && (hovered || pressed);
         bool invert = Enabled && (Appearance is ButtonAppearance.Primary or ButtonAppearance.Confirm);
         bool field = Appearance == ButtonAppearance.Field;
@@ -131,7 +164,14 @@ internal class DesktopButton : Button
         if (Focused && ShowFocusCues)
             border = Palette.Signal;
         var bounds = new Rectangle(1, 1, Width - 3, Height - 3);
-        DesktopDrawing.Shape(g, bounds, this.Px(10), background, border);
+        if (Appearance != ButtonAppearance.Segment)
+            DesktopDrawing.Shape(g, bounds, this.Px(10), background, border);
+        else if (Focused && ShowFocusCues)
+        {
+            using var focus = new Pen(Palette.Signal);
+            using var outline = DesktopDrawing.Rounded(Rectangle.Inflate(bounds, -2, -2), this.Px(9));
+            g.DrawPath(focus, outline);
+        }
 
         var foreground = invert ? Palette.AccentInk :
             !Enabled || (field && !Selected) || (Appearance == ButtonAppearance.Segment && !Selected)
@@ -177,7 +217,7 @@ internal sealed record DesktopChoice(string Key, string Caption, string? Detail 
 
 internal sealed class DesktopPicker : DesktopButton
 {
-    private readonly ContextMenuStrip menu = new() { ShowImageMargin = false, ShowCheckMargin = false };
+    private readonly PickerMenu menu = new();
     private DesktopChoice[] options = [];
     private string? selectedKey;
 
@@ -218,7 +258,7 @@ internal sealed class DesktopPicker : DesktopButton
         menu.Padding = new Padding(this.Px(5));
         int desiredWidth = Math.Max(this.Px(165), Width);
         menu.MinimumSize = new Size(desiredWidth, 0);
-        menu.Renderer = new ToolStripProfessionalRenderer(new MenuColors(Palette)) { RoundedEdges = false };
+        menu.Renderer = new MenuRenderer(Palette);
         menu.BackColor = Palette.Surface;
         while (menu.Items.Count > 0)
             menu.Items[0].Dispose();
@@ -309,20 +349,54 @@ internal sealed class DesktopPicker : DesktopButton
         private int Px(int size) => (size * dpi + 48) / 96;
     }
 
-    private sealed class MenuColors(DesktopPalette palette) : ProfessionalColorTable
+    private sealed class PickerMenu : ContextMenuStrip
     {
-        public override Color ToolStripDropDownBackground => palette.Surface;
-        public override Color MenuBorder => palette.Line;
-        public override Color MenuItemBorder => palette.Hover;
-        public override Color MenuItemSelected => palette.Hover;
-        public override Color MenuItemSelectedGradientBegin => palette.Hover;
-        public override Color MenuItemSelectedGradientEnd => palette.Hover;
-        public override Color CheckBackground => palette.Field;
-        public override Color CheckSelectedBackground => palette.Field;
-        public override Color ImageMarginGradientBegin => palette.Surface;
-        public override Color ImageMarginGradientMiddle => palette.Surface;
-        public override Color ImageMarginGradientEnd => palette.Surface;
+        public PickerMenu()
+        {
+            ShowImageMargin = ShowCheckMargin = false;
+            DropShadowEnabled = false;
+        }
+
+        protected override void OnOpening(CancelEventArgs e)
+        {
+            base.OnOpening(e);
+            UpdateRegion();
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            UpdateRegion();
+        }
+
+        private void UpdateRegion()
+        {
+            if (Width < 2 || Height < 2)
+                return;
+            using var outline = DesktopDrawing.Rounded(ClientRectangle, this.Px(13));
+            var old = Region;
+            Region = new Region(outline);
+            old?.Dispose();
+        }
     }
+
+    private sealed class MenuRenderer(DesktopPalette palette) : ToolStripRenderer
+    {
+        protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+        {
+            var bounds = new Rectangle(0, 0, e.ToolStrip.Width - 1, e.ToolStrip.Height - 1);
+            DesktopDrawing.Shape(e.Graphics, bounds, e.ToolStrip.Px(13), palette.Surface, palette.Line);
+        }
+
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { }
+
+        protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
+        {
+            e.ArrowColor = palette.Muted;
+            base.OnRenderArrow(e);
+        }
+    }
+
 }
 
 internal sealed class DesktopToggle : CheckBox
