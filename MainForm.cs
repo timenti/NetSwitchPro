@@ -41,6 +41,7 @@ internal sealed class MainForm : Form
     private TrayIconFeedback? iconFeedback;
     private bool allowExit;
     private bool upgradeExitRequested;
+    private Form? activePreferences;
     private string? trayFeedback;
     private IReadOnlyList<WifiAdapter> wireless = [];
     private IReadOnlyList<NetworkAdapterInfo> wired = [];
@@ -699,7 +700,10 @@ internal sealed class MainForm : Form
     private void CloseForUpgradeWhenIdle()
     {
         if (upgradeExitRequested && !busy && !refreshing && !IsDisposed)
+        {
+            activePreferences?.Close();
             ExitApplication();
+        }
     }
 
     private void ExitApplication()
@@ -860,14 +864,15 @@ internal sealed class MainForm : Form
 
     private void ShowPreferences()
     {
-        using var dialog = Dialog(W(Word.Settings), new Size(430, 242));
-        var layout = Grid(2, 4);
+        using var dialog = Dialog(W(Word.Settings), new Size(504, 320));
+        var layout = Grid(2, 5);
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Insert(2, new RowStyle(SizeType.Absolute, 53));
+        layout.RowStyles.Insert(3, new RowStyle(SizeType.Absolute, 78));
         var theme = MakePicker();
         theme.Margin = new Padding(0, 2, 0, 4);
         Fill(theme, [
@@ -901,14 +906,19 @@ internal sealed class MainForm : Form
         }
         layout.Controls.Add(startup, 0, 2);
         layout.SetColumnSpan(startup, 2);
-        layout.Controls.Add(apply, 1, 3);
+        AddUpdateControls(dialog, layout);
+        layout.Controls.Add(apply, 1, 4);
         apply.Margin = new Padding(0, 9, 0, 0);
         dialog.AcceptButton = apply;
         dialog.Controls.Add(layout);
         PaintTheme(dialog);
         dialog.HandleCreated += (_, _) => SetTitleBar(dialog);
         dialog.ResumeLayout(true);
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        activePreferences = dialog;
+        DialogResult result;
+        try { result = dialog.ShowDialog(this); }
+        finally { activePreferences = null; }
+        if (result != DialogResult.OK)
             return;
         if (startup.Enabled)
         {
@@ -931,6 +941,122 @@ internal sealed class MainForm : Form
         Render();
         PaintTheme(this);
         SaveAndRender();
+    }
+
+    private void AddUpdateControls(Form dialog, TableLayoutPanel layout)
+    {
+        var row = Grid(2, 1);
+        row.Margin = new Padding(0, 8, 0, 0);
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 205));
+        row.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var version = typeof(MainForm).Assembly.GetName().Version!;
+        var text = TextLabel(10, bold: true);
+        text.Text = Say("Версия ", "Version ") + version.ToString(3);
+        var note = TextLabel(9, "muted");
+        var labels = Grid(1, 2);
+        labels.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
+        labels.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        labels.Controls.Add(text, 0, 0);
+        labels.Controls.Add(note, 0, 1);
+        labels.Margin = new Padding(0, 0, 10, 0);
+        row.Controls.Add(labels, 0, 0);
+
+        var actions = Grid(1, 2);
+        actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+        var check = MakeButton(ButtonAppearance.Outline);
+        var manual = MakeButton();
+        var checkLabel = Say("Проверить обновления", "Check for updates");
+        check.Text = checkLabel;
+        manual.Text = Say("Скачать вручную", "Download manually");
+        manual.Visible = false;
+        actions.Controls.Add(check, 0, 0);
+        actions.Controls.Add(manual, 0, 1);
+        row.Controls.Add(actions, 1, 0);
+        layout.Controls.Add(row, 0, 3);
+        layout.SetColumnSpan(row, 2);
+
+        var lifetime = new CancellationTokenSource();
+        dialog.FormClosed += (_, _) => lifetime.Cancel();
+        dialog.Disposed += (_, _) => lifetime.Dispose();
+        var token = lifetime.Token;
+        AvailableUpdate? available = null;
+
+        manual.Click += (_, _) =>
+        {
+            try
+            {
+                using var browser = Process.Start(new ProcessStartInfo(ReleaseUpdates.ReleasesPage) { UseShellExecute = true });
+            }
+            catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+            {
+                note.Text = Say("Не удалось открыть GitHub.", "Could not open GitHub.");
+            }
+        };
+        check.Click += async (_, _) =>
+        {
+            check.Enabled = false;
+            manual.Visible = false;
+            try
+            {
+                if (available is null)
+                {
+                    note.Text = Say("Проверка обновлений…", "Checking for updates…");
+                    available = await ReleaseUpdates.CheckAsync(version, token);
+                    if (dialog.IsDisposed)
+                        return;
+                    note.Text = available is null ? Say("Установлена актуальная версия.", "NetSwitch Pro is up to date.") :
+                        Say("Доступна версия ", "Available version ") + available.Version.ToString(3);
+                    if (available is not null && !await Task.Run(() => UpdatePublisher.IsTrusted(Application.ExecutablePath), token))
+                    {
+                        if (dialog.IsDisposed)
+                            return;
+                        note.Text = Say("Доступна версия " + available.Version.ToString(3) + ". Требуется ручная загрузка.",
+                            "Version " + available.Version.ToString(3) + " is available for manual download.");
+                        manual.Visible = true;
+                        available = null;
+                    }
+                    if (!dialog.IsDisposed)
+                        check.Text = available is null ? checkLabel : Say("Обновить", "Update");
+                    return;
+                }
+
+                note.Text = Say("Подготовка загрузки…", "Preparing download…");
+                var progress = new Progress<int>(percent =>
+                {
+                    if (!dialog.IsDisposed)
+                        note.Text = Say("Загрузка ", "Downloading ") + percent + "%";
+                });
+                string executable = await ReleaseUpdates.DownloadAsync(available, progress, token);
+                token.ThrowIfCancellationRequested();
+                note.Text = Say("Завершение обновления…", "Finishing update…");
+                using var child = Process.Start(new ProcessStartInfo(executable, ReleaseUpdates.InstallArgument) { UseShellExecute = false })
+                    ?? throw new IOException("Windows did not start the update.");
+                await child.WaitForExitAsync(token);
+                if (!token.IsCancellationRequested)
+                    throw new IOException("The update closed before the current application could finish its handoff.");
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+            catch (Exception error) when (error is IOException or InvalidDataException or System.Net.Http.HttpRequestException or System.Text.Json.JsonException
+                or UnauthorizedAccessException or System.ComponentModel.Win32Exception or OperationCanceledException)
+            {
+                if (!dialog.IsDisposed)
+                {
+                    note.Text = Say("Не удалось обновить. См. журнал.", "Update failed. See activity.");
+                    manual.Visible = true;
+                    available = null;
+                    check.Text = checkLabel;
+                    WriteJournal(note.Text, error.Message, showStatus: false);
+                }
+            }
+            finally
+            {
+                if (!dialog.IsDisposed)
+                    check.Enabled = true;
+            }
+        };
     }
 
     private static bool IsStartupError(Exception error) =>

@@ -8,16 +8,16 @@
 <p align="center">Выберите две Wi‑Fi-сети, два адаптера или Ethernet и конкретную Wi‑Fi-сеть. Переключайтесь одной кнопкой в окне или одним кликом по значку в трее.</p>
 
 <p align="center">
-  <a href="https://github.com/timenti/NetSwitchPro/releases/download/v2.0.10/NetSwitchPro-2.0.10.exe"><strong>Скачать NetSwitch Pro 2.0.10 для Windows</strong></a>
+  <a href="https://github.com/timenti/NetSwitchPro/releases/download/v2.1.0/NetSwitchPro-2.1.0.exe"><strong>Скачать NetSwitch Pro 2.1.0 для Windows</strong></a>
   ·
-  <a href="https://github.com/timenti/NetSwitchPro/releases/tag/v2.0.10">Что нового</a>
+  <a href="https://github.com/timenti/NetSwitchPro/releases/tag/v2.1.0">Что нового</a>
 </p>
 
 <p align="center">
   <img src="docs/images/wifi-demo.gif" width="820" alt="NetSwitch Pro. Настройка двух Wi-Fi-профилей, переключение между ними и настройка пары Ethernet и Wi-Fi.">
 </p>
 
-[Смотреть демонстрацию в MP4](https://github.com/timenti/NetSwitchPro/releases/download/v2.0.10/NetSwitchPro-demo.mp4) · [Снимок главного окна](docs/images/wifi.png)
+[Смотреть демонстрацию в MP4](https://github.com/timenti/NetSwitchPro/releases/download/v2.1.0/NetSwitchPro-demo.mp4) · [Снимок главного окна](docs/images/wifi.png)
 
 ## Зачем я сделал NetSwitch Pro
 
@@ -62,9 +62,13 @@
 
 Для запуска в фоне после входа в Windows откройте **Настройки**, включите **Запускать вместе с Windows в трее** и нажмите **Сохранить**.
 
+## Обновления
+
+Откройте **Настройки** по шестерёнке. В строке с номером текущей версии нажмите **Проверить обновления**. Если есть новый стабильный релиз, нажмите **Обновить**. Прогресс загрузки отображается в этом же окне. Для автоматической установки программа сверяет SHA‑256 и проверяет, что новая сборка подписана тем же доверенным издателем. После завершения текущей операции открывается свежая версия. При сбое проверки или установки кнопка **Скачать вручную** открывает страницу последнего релиза на GitHub.
+
 ## Запуск и частые вопросы
 
-**Как запустить?** Скачайте `NetSwitchPro-2.0.10.exe` и откройте его. Это переносимая сборка для Windows x64 со встроенной средой выполнения. При первом переходе со сборки без поддержки обновления выберите **Выход** в старой копии через трей, затем нажмите **Повторить** в окне запуска.
+**Как запустить?** Скачайте `NetSwitchPro-2.1.0.exe` и откройте его. Это переносимая сборка для Windows x64 со встроенной средой выполнения.
 
 **Почему сети нет в списке?** Подключитесь к ней через Windows, затем нажмите **Обновить** в NetSwitch Pro. Каждый беспроводной адаптер показывает свои сохранённые профили.
 
@@ -82,4 +86,4 @@
 dotnet publish NetworkAdapterSwitcher.csproj -c Release -r win-x64
 ```
 
-Готовый EXE появится в `bin/Release/net10.0-windows/win-x64/publish/`. [Лицензия](LICENSE)
+Готовый EXE появится в `bin/Release/net10.0-windows10.0.19041.0/win-x64/publish/`. [Лицензия](LICENSE)

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using Windows.Networking.Connectivity;
 
 namespace NetworkAdapterSwitcher.Services;
 
@@ -18,7 +19,7 @@ internal sealed class WifiService : IWifiProfileService, IDisposable
 {
     private const uint Acm = 8;
     private const uint ConnectionComplete = 10, ConnectionAttemptFailed = 11, InterfaceRemoval = 14, Disconnected = 21;
-    private const int ConnectedState = 1, CurrentConnection = 7;
+    private const int ConnectedState = 1;
     private readonly ConcurrentDictionary<Guid, string> observedProfiles = new();
     private readonly Native.NotificationCallback callback;
     private IntPtr handle;
@@ -29,19 +30,45 @@ internal sealed class WifiService : IWifiProfileService, IDisposable
     public static string? ChooseTarget(string? first, string? second, string? active) =>
         first is null || second is null || first == second ? null : active == first ? second : first;
 
-    public IReadOnlyList<WifiAdapter> GetAdapters(bool readCurrent = true)
+    public IReadOnlyList<WifiAdapter> GetAdapters()
     {
         Open();
         Check(Native.WlanEnumInterfaces(handle, IntPtr.Zero, out var data));
         try
         {
-            return ReadList<InterfaceInfo>(data).Select(item =>
+            var interfaces = ReadList<InterfaceInfo>(data).ToArray();
+            var names = interfaces.Any(item => item.State == ConnectedState && !observedProfiles.ContainsKey(item.Id))
+                ? ConnectedSsids() : null;
+            return interfaces.Select(item =>
             {
-                string? active = item.State == ConnectedState && readCurrent ? GetCurrent(item.Id) : null;
-                return new WifiAdapter(item.Id, item.Description, GetProfiles(item.Id), active, item.State == ConnectedState);
+                bool connected = item.State == ConnectedState;
+                var profiles = GetProfiles(item.Id);
+                string? active = null;
+                if (connected && !observedProfiles.TryGetValue(item.Id, out active) &&
+                    names?.GetValueOrDefault(item.Id) is { } ssid && profiles.Contains(ssid, StringComparer.Ordinal))
+                    active = ssid;
+                return new WifiAdapter(item.Id, item.Description, profiles, active, connected);
             }).ToArray();
         }
         finally { Native.WlanFreeMemory(data); }
+    }
+
+    // Windows provides the connected SSID through WinRT without requesting location.
+    // Only WLAN notifications provide an exact profile name when it differs from the SSID.
+    private static Dictionary<Guid, string> ConnectedSsids()
+    {
+        var result = new Dictionary<Guid, string>();
+        try
+        {
+            foreach (var profile in NetworkInformation.GetConnectionProfiles())
+            {
+                if (profile.IsWlanConnectionProfile && profile.NetworkAdapter is { } adapter &&
+                    profile.WlanConnectionProfileDetails.GetConnectedSsid() is { Length: > 0 } ssid)
+                    result.TryAdd(adapter.NetworkAdapterId, ssid);
+            }
+        }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException or InvalidOperationException) { }
+        return result;
     }
 
     private string[] GetProfiles(Guid id)
@@ -52,30 +79,6 @@ internal sealed class WifiService : IWifiProfileService, IDisposable
         Check(result);
         try { return ReadList<ProfileInfo>(data).Select(info => info.Name).Distinct(StringComparer.Ordinal).ToArray(); }
         finally { Native.WlanFreeMemory(data); }
-    }
-
-    private string? GetCurrent(Guid id)
-    {
-        uint result = Native.WlanQueryInterface(handle, ref id, CurrentConnection, IntPtr.Zero, out var size, out var data, out _);
-        if (result != 0)
-            return result == 5 && observedProfiles.TryGetValue(id, out var name) ? name : null;
-        try
-        {
-            if (size < 520 || Marshal.ReadInt32(data) != ConnectedState)
-                return null;
-            return Marshal.PtrToStringUni(IntPtr.Add(data, 8), 256)?.TrimEnd('\0');
-        }
-        finally { Native.WlanFreeMemory(data); }
-    }
-
-    public async Task<WifiSwitchOutcome> SwitchAsync(Guid id, string first, string second, string requested)
-    {
-        var start = GetAdapters().SingleOrDefault(a => a.Id == id);
-        if (start is null || !start.Profiles.Contains(first) || !start.Profiles.Contains(second) ||
-            requested != ChooseTarget(first, second, start.ActiveProfile))
-            return new(WifiSwitchResult.NotConfirmed);
-
-        return await ConnectSavedAsync(start, requested);
     }
 
     public WifiAdapter? FindAdapter(Guid id) => GetAdapters().FirstOrDefault(item => item.Id == id);
@@ -90,7 +93,7 @@ internal sealed class WifiService : IWifiProfileService, IDisposable
 
     private async Task<WifiSwitchOutcome> ConnectSavedAsync(WifiAdapter start, string requested)
     {
-        if (start.Connected && start.ActiveProfile == requested)
+        if (start.Connected && observedProfiles.TryGetValue(start.Id, out var known) && known == requested)
             return new(WifiSwitchResult.Connected);
         Guid id = start.Id;
         string? previous = start.ActiveProfile;
@@ -122,18 +125,15 @@ internal sealed class WifiService : IWifiProfileService, IDisposable
             if (error != 0)
                 return (false, false, new Win32Exception((int)error).Message, error);
 
-            for (int i = 0; i < 36; i++)
+            try
             {
-                if (attempt.Completed.Task.IsCompletedSuccessfully)
-                {
-                    uint reason = await attempt.Completed.Task;
-                    return reason == 0 ? (true, true, null, 0u) : (true, false, Reason(reason), 0u);
-                }
-                if (i % 3 == 0 && GetCurrent(id) == profile)
-                    return (true, true, null, 0);
-                await Task.Delay(500);
+                uint reason = await attempt.Completed.Task.WaitAsync(TimeSpan.FromSeconds(18));
+                return (true, reason == 0, Reason(reason), 0);
             }
-            return (true, false, Reason(Volatile.Read(ref attempt.LastFailure)), 0);
+            catch (TimeoutException)
+            {
+                return (true, false, Reason(Volatile.Read(ref attempt.LastFailure)), 0);
+            }
         }
         finally { Volatile.Write(ref pending, null); }
     }
@@ -143,8 +143,13 @@ internal sealed class WifiService : IWifiProfileService, IDisposable
         if (handle != IntPtr.Zero)
             return;
         Check(Native.WlanOpenHandle(2, IntPtr.Zero, out _, out handle));
-        // ACM notifications can confirm a profile switch even when location rules block querying the active profile.
-        _ = Native.WlanRegisterNotification(handle, Acm, false, callback, IntPtr.Zero, IntPtr.Zero, out _);
+        uint result = Native.WlanRegisterNotification(handle, Acm, false, callback, IntPtr.Zero, IntPtr.Zero, out _);
+        if (result != 0)
+        {
+            _ = Native.WlanCloseHandle(handle, IntPtr.Zero);
+            handle = IntPtr.Zero;
+            Check(result);
+        }
     }
 
     private void ObserveNotification(ref Notification value, IntPtr context)
@@ -260,7 +265,6 @@ internal sealed class WifiService : IWifiProfileService, IDisposable
         [DllImport("wlanapi.dll")] internal static extern void WlanFreeMemory(IntPtr data);
         [DllImport("wlanapi.dll")] internal static extern uint WlanEnumInterfaces(IntPtr handle, IntPtr reserved, out IntPtr data);
         [DllImport("wlanapi.dll")] internal static extern uint WlanGetProfileList(IntPtr handle, ref Guid id, IntPtr reserved, out IntPtr data);
-        [DllImport("wlanapi.dll")] internal static extern uint WlanQueryInterface(IntPtr handle, ref Guid id, int opcode, IntPtr reserved, out uint size, out IntPtr data, out int value);
         [DllImport("wlanapi.dll")] internal static extern uint WlanConnect(IntPtr handle, ref Guid id, ref ConnectionParameters settings, IntPtr reserved);
         [DllImport("wlanapi.dll")] internal static extern uint WlanRegisterNotification(IntPtr handle, uint source, [MarshalAs(UnmanagedType.Bool)] bool ignoreDuplicates, NotificationCallback? callback, IntPtr context, IntPtr reserved, out uint previous);
         [DllImport("wlanapi.dll", CharSet = CharSet.Unicode, ExactSpelling = true)] internal static extern uint WlanReasonCodeToString(uint reason, int size, System.Text.StringBuilder text, IntPtr reserved);
