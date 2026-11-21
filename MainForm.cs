@@ -864,40 +864,31 @@ internal sealed class MainForm : Form
 
     private void ShowPreferences()
     {
-        using var dialog = Dialog(W(Word.Settings), new Size(504, 320));
-        var layout = Grid(2, 5);
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
+        using var dialog = Dialog(W(Word.Settings), new Size(460, 322));
+        var layout = Grid(2, 4);
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 125));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Insert(2, new RowStyle(SizeType.Absolute, 53));
-        layout.RowStyles.Insert(3, new RowStyle(SizeType.Absolute, 78));
+
+        var themeLabel = TextLabel(13, bold: true);
+        var languageLabel = TextLabel(13, bold: true);
         var theme = MakePicker();
-        theme.Margin = new Padding(0, 2, 0, 4);
-        Fill(theme, [
-            new DesktopChoice("system", W(Word.SystemTheme)),
-            new DesktopChoice("dark", W(Word.Dark)),
-            new DesktopChoice("light", W(Word.Light))], settings.Theme);
-        theme.AccessibleName = W(Word.Theme);
         var languages = MakePicker();
-        languages.Margin = theme.Margin;
-        languages.AccessibleName = W(Word.Language);
-        Fill(languages, UiWords.Languages.Select(x => new DesktopChoice(x.Key, x.Label)), settings.Language);
-        var apply = MakeButton(ButtonAppearance.Primary);
-        apply.Text = Say("Сохранить", "Save");
-        apply.DialogResult = DialogResult.OK;
-        layout.Controls.Add(new Label { Text = W(Word.Theme), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+        theme.Margin = languages.Margin = new Padding(0, 3, 0, 3);
+        themeLabel.Margin = languageLabel.Margin = new Padding(4, 0, 0, 0);
+        themeLabel.TextAlign = languageLabel.TextAlign = ContentAlignment.MiddleLeft;
+        layout.Controls.Add(themeLabel, 0, 0);
         layout.Controls.Add(theme, 1, 0);
-        layout.Controls.Add(new Label { Text = W(Word.Language), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 1);
+        layout.Controls.Add(languageLabel, 0, 1);
         layout.Controls.Add(languages, 1, 1);
-        var startup = new DesktopToggle { Text = W(Word.Autostart), Dock = DockStyle.Fill,
-            SwitchStyle = true, Margin = new Padding(0, 6, 0, 3) };
-        string? startupCommand = null;
+
+        var startup = new DesktopToggle { Dock = DockStyle.Fill, SwitchStyle = true, Margin = new Padding(0, 6, 0, 3) };
         try
         {
-            startupCommand = StartupRegistration.ReadCommand();
-            startup.Checked = !string.IsNullOrWhiteSpace(startupCommand);
+            startup.Checked = !string.IsNullOrWhiteSpace(StartupRegistration.ReadCommand());
         }
         catch (Exception error) when (IsStartupError(error))
         {
@@ -906,83 +897,126 @@ internal sealed class MainForm : Form
         }
         layout.Controls.Add(startup, 0, 2);
         layout.SetColumnSpan(startup, 2);
-        AddUpdateControls(dialog, layout);
-        layout.Controls.Add(apply, 1, 4);
-        apply.Margin = new Padding(0, 9, 0, 0);
-        dialog.AcceptButton = apply;
+        var refreshUpdateWords = AddUpdateControls(dialog, layout);
         dialog.Controls.Add(layout);
+        RefreshLabels();
+
+        theme.SelectionChangeCommitted += (_, _) =>
+        {
+            settings.Theme = theme.SelectedKey ?? "system";
+            lightTheme = settings.IsLight;
+            PaintTheme(this);
+            PaintTheme(dialog);
+            UpdateTray();
+            SaveSettings();
+        };
+        languages.SelectionChangeCommitted += (_, _) =>
+        {
+            settings.Language = languages.SelectedKey ?? "English";
+            UpdateLabels();
+            Render();
+            RefreshLabels();
+            SaveSettings();
+        };
+        bool restoringStartup = false;
+        startup.CheckedChanged += (_, _) =>
+        {
+            if (restoringStartup) return;
+            try { StartupRegistration.SetEnabled(startup.Checked, Application.ExecutablePath); }
+            catch (Exception error) when (IsStartupError(error))
+            {
+                restoringStartup = true;
+                startup.Checked = !startup.Checked;
+                restoringStartup = false;
+                WriteJournal(W(Word.StartupFailed), error.Message);
+                MessageBox.Show(dialog, W(Word.StartupFailed), "NetSwitch Pro", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        };
+
         PaintTheme(dialog);
         dialog.HandleCreated += (_, _) => SetTitleBar(dialog);
         dialog.ResumeLayout(true);
         activePreferences = dialog;
-        DialogResult result;
-        try { result = dialog.ShowDialog(this); }
+        try { dialog.ShowDialog(this); }
         finally { activePreferences = null; }
-        if (result != DialogResult.OK)
-            return;
-        if (startup.Enabled)
+
+        void RefreshLabels()
         {
-            try
-            {
-                bool registered = !string.IsNullOrWhiteSpace(startupCommand);
-                if (startup.Checked != registered)
-                    StartupRegistration.SetEnabled(startup.Checked, Application.ExecutablePath);
-            }
-            catch (Exception error) when (IsStartupError(error))
-            {
-                WriteJournal(W(Word.StartupFailed), error.Message);
-                MessageBox.Show(this, W(Word.StartupFailed), "NetSwitch Pro", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
+            dialog.Text = W(Word.Settings);
+            themeLabel.Text = theme.AccessibleName = W(Word.Theme);
+            languageLabel.Text = languages.AccessibleName = W(Word.Language);
+            Fill(theme, [new DesktopChoice("system", W(Word.SystemTheme)),
+                new DesktopChoice("dark", W(Word.Dark)), new DesktopChoice("light", W(Word.Light))], settings.Theme);
+            Fill(languages, UiWords.Languages.Select(x => new DesktopChoice(x.Key, x.Label)), settings.Language);
+            startup.Text = W(Word.Autostart);
+            refreshUpdateWords();
         }
-        settings.Theme = theme.SelectedKey ?? "system";
-        lightTheme = settings.IsLight;
-        settings.Language = languages.SelectedKey ?? "English";
-        UpdateLabels();
-        Render();
-        PaintTheme(this);
-        SaveAndRender();
     }
 
-    private void AddUpdateControls(Form dialog, TableLayoutPanel layout)
+    private Action AddUpdateControls(Form dialog, TableLayoutPanel layout)
     {
-        var row = Grid(2, 1);
-        row.Margin = new Padding(0, 8, 0, 0);
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 205));
-        row.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var card = Surface(1, 5);
+        card.Margin = new Padding(0, 6, 0, 0);
+        card.Padding = new Padding(14, 9, 14, 8);
+        card.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        card.RowStyles.Add(new RowStyle(SizeType.Absolute, 21));
+        card.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
+        card.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        var manualRow = new RowStyle(SizeType.Absolute, 0);
+        card.RowStyles.Add(manualRow);
 
         var version = typeof(MainForm).Assembly.GetName().Version!;
-        var text = TextLabel(10, bold: true);
-        text.Text = Say("Версия ", "Version ") + version.ToString(3);
-        var note = TextLabel(9, "muted");
-        var labels = Grid(1, 2);
-        labels.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
-        labels.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        labels.Controls.Add(text, 0, 0);
-        labels.Controls.Add(note, 0, 1);
-        labels.Margin = new Padding(0, 0, 10, 0);
-        row.Controls.Add(labels, 0, 0);
-
-        var actions = Grid(1, 2);
-        actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        actions.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
-        var check = MakeButton(ButtonAppearance.Outline);
+        var title = TextLabel(21, bold: true);
+        title.Text = "NetSwitch Pro";
+        title.TextAlign = ContentAlignment.MiddleCenter;
+        var versionLabel = TextLabel(12, "muted");
+        versionLabel.TextAlign = ContentAlignment.MiddleCenter;
+        var note = TextLabel(10, "muted");
+        note.TextAlign = ContentAlignment.MiddleCenter;
+        var check = MakeButton(ButtonAppearance.Primary);
+        check.Font = new Font("Segoe UI Semibold", 12);
+        check.Margin = new Padding(45, 2, 45, 2);
         var manual = MakeButton();
-        var checkLabel = Say("Проверить обновления", "Check for updates");
-        check.Text = checkLabel;
-        manual.Text = Say("Скачать вручную", "Download manually");
+        manual.Margin = new Padding(65, 4, 65, 0);
         manual.Visible = false;
-        actions.Controls.Add(check, 0, 0);
-        actions.Controls.Add(manual, 0, 1);
-        row.Controls.Add(actions, 1, 0);
-        layout.Controls.Add(row, 0, 3);
-        layout.SetColumnSpan(row, 2);
+        card.Controls.Add(title, 0, 0);
+        card.Controls.Add(versionLabel, 0, 1);
+        card.Controls.Add(note, 0, 2);
+        card.Controls.Add(check, 0, 3);
+        card.Controls.Add(manual, 0, 4);
+        layout.Controls.Add(card, 0, 3);
+        layout.SetColumnSpan(card, 2);
+
 
         var lifetime = new CancellationTokenSource();
         dialog.FormClosed += (_, _) => lifetime.Cancel();
         dialog.Disposed += (_, _) => lifetime.Dispose();
         var token = lifetime.Token;
         AvailableUpdate? available = null;
+        Func<string> status = () => "";
+        bool installing = false;
+        bool checking = false;
+        int manualHeight = 0;
+        void ShowManual(bool show)
+        {
+            int height = show ? (int)Math.Round(30 * dialog.DeviceDpi / 96.0) : 0;
+            if (height == manualHeight) return;
+            int difference = height - manualHeight;
+            manualHeight = height;
+            manualRow.Height = height;
+            manual.Visible = show;
+            dialog.ClientSize = new Size(dialog.ClientSize.Width, dialog.ClientSize.Height + difference);
+        }
+        void RefreshWords()
+        {
+            versionLabel.Text = Say("Версия ", "Version ") + version.ToString(3);
+            note.Text = status();
+            check.Text = installing ? Say("Обновление…", "Updating…") :
+                checking ? Say("Проверяем…", "Checking…") :
+                available is not null ? Say("Обновить сейчас", "Update now") : Say("Проверить обновления", "Check for updates");
+            manual.Text = Say("Скачать вручную", "Download manually");
+        }
+        void ShowStatus(Func<string> message) { status = message; RefreshWords(); }
 
         manual.Click += (_, _) =>
         {
@@ -992,46 +1026,49 @@ internal sealed class MainForm : Form
             }
             catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
             {
-                note.Text = Say("Не удалось открыть GitHub.", "Could not open GitHub.");
+                ShowStatus(() => Say("Не удалось открыть GitHub.", "Could not open GitHub."));
             }
         };
         check.Click += async (_, _) =>
         {
             check.Enabled = false;
-            manual.Visible = false;
+            ShowManual(false);
             try
             {
                 if (available is null)
                 {
-                    note.Text = Say("Проверка обновлений…", "Checking for updates…");
-                    available = await ReleaseUpdates.CheckAsync(version, token);
+                    checking = true;
+                    ShowStatus(() => Say("Проверка последнего релиза GitHub…", "Checking the latest GitHub release…"));
+                    var lookup = ReleaseUpdates.CheckAsync(version, token);
+                    await Task.WhenAll(lookup, Task.Delay(1100, token));
+                    available = await lookup;
                     if (dialog.IsDisposed)
                         return;
-                    note.Text = available is null ? Say("Установлена актуальная версия.", "NetSwitch Pro is up to date.") :
-                        Say("Доступна версия ", "Available version ") + available.Version.ToString(3);
+                    var found = available?.Version.ToString(3);
+                    ShowStatus(() => found is null ? Say("Установлена актуальная версия.", "NetSwitch Pro is up to date.") :
+                        Say("Доступно обновление NetSwitch Pro ", "NetSwitch Pro update available: ") + found);
                     if (available is not null && !await Task.Run(() => UpdatePublisher.IsTrusted(Application.ExecutablePath), token))
                     {
                         if (dialog.IsDisposed)
                             return;
-                        note.Text = Say("Доступна версия " + available.Version.ToString(3) + ". Требуется ручная загрузка.",
-                            "Version " + available.Version.ToString(3) + " is available for manual download.");
-                        manual.Visible = true;
+                        ShowStatus(() => Say("Версия " + found + " доступна для ручной загрузки.",
+                            "Version " + found + " is available for manual download."));
+                        ShowManual(true);
                         available = null;
                     }
-                    if (!dialog.IsDisposed)
-                        check.Text = available is null ? checkLabel : Say("Обновить", "Update");
                     return;
                 }
 
-                note.Text = Say("Подготовка загрузки…", "Preparing download…");
+                installing = true;
+                ShowStatus(() => Say("Подготовка загрузки…", "Preparing download…"));
                 var progress = new Progress<int>(percent =>
                 {
                     if (!dialog.IsDisposed)
-                        note.Text = Say("Загрузка ", "Downloading ") + percent + "%";
+                        ShowStatus(() => Say("Загрузка ", "Downloading ") + percent + "%");
                 });
                 string executable = await ReleaseUpdates.DownloadAsync(available, progress, token);
                 token.ThrowIfCancellationRequested();
-                note.Text = Say("Завершение обновления…", "Finishing update…");
+                ShowStatus(() => Say("Завершение обновления…", "Finishing update…"));
                 using var child = Process.Start(new ProcessStartInfo(executable, ReleaseUpdates.InstallArgument) { UseShellExecute = false })
                     ?? throw new IOException("Windows did not start the update.");
                 await child.WaitForExitAsync(token);
@@ -1044,19 +1081,25 @@ internal sealed class MainForm : Form
             {
                 if (!dialog.IsDisposed)
                 {
-                    note.Text = Say("Не удалось обновить. См. журнал.", "Update failed. See activity.");
-                    manual.Visible = true;
+                    bool failedInstallation = installing;
+                    ShowStatus(() => failedInstallation ? Say("Не удалось обновить. См. журнал.", "Update failed. See activity.") :
+                        Say("Не удалось проверить обновления.", "Could not check for updates."));
+                    ShowManual(true);
                     available = null;
-                    check.Text = checkLabel;
                     WriteJournal(note.Text, error.Message, showStatus: false);
                 }
             }
             finally
             {
+                checking = installing = false;
                 if (!dialog.IsDisposed)
+                {
                     check.Enabled = true;
+                    RefreshWords();
+                }
             }
         };
+        return RefreshWords;
     }
 
     private static bool IsStartupError(Exception error) =>
