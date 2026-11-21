@@ -40,6 +40,10 @@ internal sealed class MainForm : Form
     private readonly TableLayoutPanel adapterAccess = Surface(2, 1);
     private readonly FlowLayoutPanel filters = new() { Dock = DockStyle.Fill, WrapContents = true, Margin = Padding.Empty };
     private readonly ToolTip tooltips = new();
+    private readonly NotifyIcon notification = new() { Text = "NetSwitch Pro" };
+    private readonly TrayPanel tray = new();
+    private bool allowExit;
+    private string? trayFeedback;
     private IReadOnlyList<WifiAdapter> wireless = [];
     private IReadOnlyList<NetworkAdapterInfo> wired = [];
     private bool wifiMode;
@@ -92,6 +96,8 @@ internal sealed class MainForm : Form
         Shown += async (_, _) =>
         {
             hasShown = true;
+            notification.Icon = Icon;
+            notification.Visible = notification.Icon is not null;
             await RefreshAsync();
         };
         Activated += async (_, _) =>
@@ -100,8 +106,24 @@ internal sealed class MainForm : Form
             if (hasShown && Environment.TickCount64 - lastRead >= 6000)
                 await RefreshAsync(background: true);
         };
-        FormClosing += (_, e) => e.Cancel = (busy || refreshing) && e.CloseReason == CloseReason.UserClosing;
-        FormClosed += (_, _) => { wifi.Dispose(); tooltips.Dispose(); };
+        notification.MouseClick += async (_, e) =>
+        {
+            if (e.Button is MouseButtons.Left or MouseButtons.Right)
+                await OpenTrayAsync(Cursor.Position);
+        };
+        tray.ProfileRequested += async target => await ConnectFromTrayAsync(target);
+        tray.OpenRequested += RestoreMainWindow;
+        tray.ExitRequested += ExitApplication;
+
+        FormClosing += (_, e) =>
+        {
+            if (e.CloseReason == CloseReason.UserClosing && !allowExit && notification.Visible)
+            {
+                e.Cancel = true;
+                Hide();
+            }
+        };
+
     }
 
     private void BuildLayout()
@@ -251,7 +273,7 @@ internal sealed class MainForm : Form
         SaveSettings();
     }
 
-    private async Task RefreshAsync(bool background = false)
+    private async Task RefreshAsync(bool background = false, bool wifiOnly = false)
     {
         if (busy || refreshing)
             return;
@@ -260,7 +282,14 @@ internal sealed class MainForm : Form
             action.Enabled = false;
         else
             SetBusy(true);
-        try { await Task.WhenAll(ReadAsync(true), ReadAsync(false)); }
+        UpdateTray();
+        try
+        {
+            if (wifiOnly)
+                await ReadAsync(true);
+            else
+                await Task.WhenAll(ReadAsync(true), ReadAsync(false));
+        }
         finally
         {
             refreshing = false;
@@ -349,6 +378,7 @@ internal sealed class MainForm : Form
             ResumeLayout(true);
             binding = false;
         }
+        UpdateTray();
     }
 
     private void RenderWifi()
@@ -460,15 +490,7 @@ internal sealed class MainForm : Form
             if (wifiMode && selected is not null && firstSelection is not null && secondSelection is not null &&
                 WifiService.ChooseTarget(firstSelection, secondSelection, selected.ActiveProfile) is { } target)
             {
-                var outcome = await Task.Run(() => wifi.SwitchAsync(selected.Id, firstSelection, secondSelection, target));
-                var message = outcome.Result switch
-                {
-                    WifiSwitchResult.Connected => Say("Подключено к ", "Connected to ") + target,
-                    WifiSwitchResult.PreviousRestored => Say("Не удалось переключиться. Прежняя сеть восстановлена.", "Switch failed. The previous network was restored."),
-                    WifiSwitchResult.RestoreUnconfirmed => Say("Не удалось подтвердить восстановление прежней сети.", "Could not confirm restoration of the previous network."),
-                    _ => Say("Windows не подтвердила подключение к ", "Windows did not confirm connection to ") + target
-                };
-                WriteJournal(message, outcome.Diagnostic);
+                await RunWifiAsync(() => wifi.SwitchAsync(selected.Id, firstSelection, secondSelection, target), target);
             }
             else if (!wifiMode && administrator && a is not null && b is not null && a.Id != b.Id)
             {
@@ -493,6 +515,116 @@ internal sealed class MainForm : Form
             lastRead = Environment.TickCount64;
             SetBusy(false);
         }
+    }
+
+    private async Task RunWifiAsync(Func<Task<WifiSwitchOutcome>> connect, string target, bool fromTray = false)
+    {
+        try
+        {
+            var outcome = await Task.Run(connect);
+            var message = outcome.Result switch
+            {
+                WifiSwitchResult.Connected => Say("Подключено к ", "Connected to ") + target,
+                WifiSwitchResult.PreviousRestored => Say("Не удалось переключиться. Прежняя сеть восстановлена.", "Switch failed. The previous network was restored."),
+                WifiSwitchResult.RestoreUnconfirmed => Say("Не удалось подтвердить восстановление прежней сети.", "Could not confirm restoration of the previous network."),
+                _ => Say("Windows не подтвердила подключение к ", "Windows did not confirm connection to ") + target
+            };
+            if (fromTray)
+                trayFeedback = outcome.Result == WifiSwitchResult.Connected ? null : message;
+            WriteJournal(message, outcome.Diagnostic);
+        }
+        catch (Exception ex)
+        {
+            string message = Say("Windows не выполнила переключение.", "Windows could not switch the connection.");
+            if (fromTray)
+                trayFeedback = message;
+            WriteJournal(message, ex.Message);
+        }
+    }
+
+    private async Task OpenTrayAsync(Point location)
+    {
+        if (tray.Visible)
+        {
+            tray.Hide();
+            return;
+        }
+
+        if (!busy)
+            trayFeedback = null;
+        UpdateSystemTheme();
+        tray.OpenAt(location, TraySnapshot());
+        await RefreshAsync(background: true, wifiOnly: true);
+    }
+
+    private TrayState TraySnapshot()
+    {
+        var active = ActiveInterface();
+        var saved = active?.Profiles ?? [];
+        var pair = new[] { settings.WifiA, settings.WifiB }.OfType<string>()
+            .Where(name => saved.Contains(name, StringComparer.Ordinal)).Distinct(StringComparer.Ordinal).ToArray();
+        string connectionName = active?.ActiveProfile ??
+            (active?.Connected == true ? W(Word.Unknown) : W(Word.Disconnect));
+        string? note = busy ? (trayFeedback ?? W(Word.Busy)) : refreshing && saved.Length == 0
+            ? W(Word.Busy) : trayFeedback ?? wifiReadError;
+        return new TrayState(settings.Language, lightTheme, connectionName, active?.Connected == true, pair,
+            saved.Order(StringComparer.CurrentCultureIgnoreCase).ToArray(), busy || refreshing, note);
+    }
+
+    private void UpdateTray()
+    {
+        if (tray.Visible)
+            tray.UpdateState(TraySnapshot());
+    }
+
+    private async Task ConnectFromTrayAsync(string target)
+    {
+        if (busy || refreshing || ActiveInterface() is not { } active ||
+            !active.Profiles.Contains(target, StringComparer.Ordinal))
+            return;
+
+        trayFeedback = W(Word.Connect) + " " + target + "…";
+        SetBusy(true);
+        try
+        {
+            await RunWifiAsync(() => wifi.ConnectProfileAsync(active.Id, target), target, fromTray: true);
+        }
+        finally
+        {
+            await Task.WhenAll(ReadAsync(true), ReadAsync(false));
+            lastRead = Environment.TickCount64;
+            SetBusy(false);
+        }
+    }
+
+    internal void RestoreMainWindow()
+    {
+        tray.Hide();
+        if (!Visible)
+            Show();
+        if (WindowState == FormWindowState.Minimized)
+            WindowState = FormWindowState.Normal;
+        Activate();
+    }
+
+    private void ExitApplication()
+    {
+        if (busy || refreshing)
+            return;
+        allowExit = true;
+        Close();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            notification.Dispose();
+            tray.Dispose();
+            wifi.Dispose();
+            tooltips.Dispose();
+        }
+        base.Dispose(disposing);
     }
 
     private void ChangeFilters()
@@ -544,6 +676,8 @@ internal sealed class MainForm : Form
 
     private void Elevate()
     {
+        if (busy || refreshing)
+            return;
         SaveSettings();
         try
         {
@@ -553,7 +687,10 @@ internal sealed class MainForm : Form
                 Verb = "runas"
             });
             if (child is not null)
+            {
+                allowExit = true;
                 Close();
+            }
         }
         catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223) { }
         catch (Exception ex) { WriteJournal(Say("Не удалось запустить режим администратора.", "Could not start administrator mode."), ex.Message); }
@@ -734,6 +871,7 @@ internal sealed class MainForm : Form
         PaintTheme(this);
         foreach (var dialog in OwnedForms)
             PaintTheme(dialog);
+        UpdateTray();
     }
 
     private void SetTitleBar(Form form)

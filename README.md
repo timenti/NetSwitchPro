@@ -8,9 +8,9 @@
 <p align="center">Выберите два сохранённых подключения с нужными маршрутами. NetSwitch Pro покажет, какое активно и куда подключит следующее нажатие.</p>
 
 <p align="center">
-  <a href="https://github.com/timenti/NetSwitchPro/releases/download/v2.0.2/NetSwitchPro-2.0.2.exe"><strong>Скачать NetSwitch Pro 2.0.2 для Windows</strong></a>
+  <a href="https://github.com/timenti/NetSwitchPro/releases/download/v2.0.3/NetSwitchPro-2.0.3.exe"><strong>Скачать NetSwitch Pro 2.0.3 для Windows</strong></a>
   ·
-  <a href="https://github.com/timenti/NetSwitchPro/releases/tag/v2.0.2">Что нового</a>
+  <a href="https://github.com/timenti/NetSwitchPro/releases/tag/v2.0.3">Что нового</a>
 </p>
 
 <p align="center">
@@ -52,9 +52,19 @@
 
 *На снимках и в анимации показан интерфейс NetSwitch Pro с демонстрационными сетями.*
 
+## Быстрый доступ из области уведомлений
+
+После запуска значок **NetSwitch Pro** доступен рядом с часами или под стрелкой **^**. Нажмите его, чтобы увидеть активную сеть и выбранную пару. Нажатие на другую сеть подключает её. Через **Все сохранённые сети** можно выбрать любой профиль выбранного Wi‑Fi‑адаптера.
+
+<p align="center">
+  <img src="docs/images/tray.png" width="374" alt="Быстрая панель NetSwitch Pro с активной Russia Network и кнопкой Germany Network">
+</p>
+
+Крестик главного окна скрывает его, а значок остаётся в области уведомлений. Чтобы открыть настройки пары, используйте **Открыть NetSwitch Pro**. Для полного завершения программы нажмите **Выход** на быстрой панели.
+
 ## Запуск и частые вопросы
 
-**Как установить?** Скачайте файл `NetSwitchPro-2.0.2.exe` и запустите его. Это переносимая сборка для Windows x64 со встроенной средой выполнения.
+**Как установить?** Скачайте файл `NetSwitchPro-2.0.3.exe` и запустите его. Это переносимая сборка для Windows x64 со встроенной средой выполнения.
 
 **Почему сети нет в списке?** Программа показывает профили, сохранённые Windows для выбранного адаптера. Подключитесь к нужной сети через Windows и нажмите **Обновить** в NetSwitch Pro.
 

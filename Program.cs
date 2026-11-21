@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Security.Principal;
 using NetworkAdapterSwitcher.Services;
 
 namespace NetworkAdapterSwitcher;
@@ -14,8 +15,59 @@ internal static class Program
             return;
         }
 
-        ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm(args is ["--adapters"]));
+        RunWindow(args is ["--adapters"]);
+    }
+
+    private static void RunWindow(bool forceAdapters)
+    {
+        using var identity = WindowsIdentity.GetCurrent();
+        var administrator = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+        string prefix = $@"Local\NetSwitchPro.{identity.User?.Value}";
+        string elevated = prefix + ".elevated";
+        if (!administrator && TryShow(elevated + ".show"))
+            return;
+
+        string instance = administrator ? elevated : prefix + ".normal";
+        using var show = new EventWaitHandle(false, EventResetMode.AutoReset, instance + ".show");
+        using var mutex = new Mutex(true, instance, out bool owns);
+        if (!owns)
+        {
+            try { owns = mutex.WaitOne(0); }
+            catch (AbandonedMutexException) { owns = true; }
+        }
+        if (!owns)
+        {
+            show.Set();
+            return;
+        }
+
+        try
+        {
+            ApplicationConfiguration.Initialize();
+            using var main = new MainForm(forceAdapters);
+            var listener = ThreadPool.RegisterWaitForSingleObject(show, (_, _) =>
+            {
+                if (!main.IsHandleCreated || main.IsDisposed)
+                    return;
+                try { main.BeginInvoke(main.RestoreMainWindow); }
+                catch (InvalidOperationException) { }
+            }, null, Timeout.Infinite, executeOnlyOnce: false);
+            try { Application.Run(main); }
+            finally { listener.Unregister(null); }
+        }
+        finally { mutex.ReleaseMutex(); }
+    }
+
+    private static bool TryShow(string name)
+    {
+        try
+        {
+            if (!EventWaitHandle.TryOpenExisting(name, out var show))
+                return false;
+            using (show)
+                return show.Set();
+        }
+        catch (UnauthorizedAccessException) { return false; }
     }
 
     private static void WriteReadOnlyReport(string report)

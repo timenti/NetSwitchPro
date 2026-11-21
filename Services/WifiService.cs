@@ -66,6 +66,22 @@ internal sealed class WifiService : IDisposable
             requested != ChooseTarget(first, second, start.ActiveProfile))
             return new(WifiSwitchResult.NotConfirmed);
 
+        return await ConnectSavedAsync(start, requested);
+    }
+
+    public Task<WifiSwitchOutcome> ConnectProfileAsync(Guid id, string requested)
+    {
+        var adapter = GetAdapters().SingleOrDefault(item => item.Id == id);
+        return adapter is not null && adapter.Profiles.Contains(requested, StringComparer.Ordinal)
+            ? ConnectSavedAsync(adapter, requested)
+            : Task.FromResult(new WifiSwitchOutcome(WifiSwitchResult.NotConfirmed));
+    }
+
+    private async Task<WifiSwitchOutcome> ConnectSavedAsync(WifiAdapter start, string requested)
+    {
+        if (start.Connected && start.ActiveProfile == requested)
+            return new(WifiSwitchResult.Connected);
+        Guid id = start.Id;
         string? previous = start.ActiveProfile;
         var attempt = await ConnectAsync(id, requested);
         if (attempt.Joined)

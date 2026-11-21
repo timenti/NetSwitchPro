@@ -209,7 +209,8 @@ internal class DesktopButton : Button
 
         if (textArea.Width > 0)
             TextRenderer.DrawText(g, Text, Font, textArea, foreground,
-                flags | (field || Glyph is not null ? TextFormatFlags.Left : TextFormatFlags.HorizontalCenter));
+                flags | (field || TextAlign == ContentAlignment.MiddleLeft || Glyph is not null
+                    ? TextFormatFlags.Left : TextFormatFlags.HorizontalCenter));
     }
 }
 
