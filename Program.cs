@@ -164,14 +164,11 @@ internal static class Program
 
             if (RunningInstance.WaitUntilFree(name, TimeSpan.Zero))
                 return false;
-            if (quiet)
-                return true;
-            var decision = ShowLaunchMessage(
-                "Another version is still running. Choose Exit from its tray menu, then click Retry.",
-                "В трее работает другая версия. Закройте её через «Выход» в меню значка, затем нажмите кнопку повтора.",
-                MessageBoxButtons.RetryCancel);
-            if (decision != DialogResult.Retry)
-                return true;
+            if (other is null && LegacyInstance.RequestExit(name, version))
+                return false;
+            if (!quiet)
+                RunningInstance.Signal(name, ".show");
+            return true;
         }
         return false;
     }
