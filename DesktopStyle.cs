@@ -81,7 +81,7 @@ internal sealed class SurfaceGrid : LayoutGrid
     }
 }
 
-internal enum ButtonAppearance { Quiet, Outline, Segment, Field, Primary }
+internal enum ButtonAppearance { Quiet, Outline, Field, Primary }
 
 internal class DesktopButton : Button
 {
@@ -94,8 +94,6 @@ internal class DesktopButton : Button
     internal bool Selected { get; set; }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal string? Glyph { get; init; }
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    internal float GlyphSize { get; init; } = 12;
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal Color? Indicator { get; set; }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -121,31 +119,11 @@ internal class DesktopButton : Button
     protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); hovered = false; pressed = false; Invalidate(); }
     protected override void OnMouseDown(MouseEventArgs e)
     {
-        if (e.Button == MouseButtons.Left && Parent is ModeSelector selector)
-        {
-            selector.BeginMouse(PointToScreen(e.Location));
-            return;
-        }
         base.OnMouseDown(e);
         pressed = e.Button == MouseButtons.Left;
         Invalidate();
     }
 
-    protected override void WndProc(ref Message m)
-    {
-        if (Parent is not ModeSelector selector || !selector.HandleTouch(ref m))
-            base.WndProc(ref m);
-    }
-
-    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-    {
-        if (Parent is ModeSelector selector && keyData is Keys.Left or Keys.Right)
-        {
-            selector.RequestMode(keyData == Keys.Left);
-            return true;
-        }
-        return base.ProcessCmdKey(ref msg, keyData);
-    }
     protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); pressed = false; Invalidate(); }
     protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
     protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
@@ -154,10 +132,7 @@ internal class DesktopButton : Button
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        if (Parent is ModeSelector selector)
-            selector.PaintTrack(g, Left, Top);
-        else
-            g.Clear(Parent?.BackColor ?? Palette.Window);
+        g.Clear(Parent?.BackColor ?? Palette.Window);
         bool over = Enabled && (hovered || pressed);
         bool primary = Appearance == ButtonAppearance.Primary;
         bool field = Appearance == ButtonAppearance.Field;
@@ -165,24 +140,16 @@ internal class DesktopButton : Button
         {
             ButtonAppearance.Primary => Enabled ? (over ? Palette.AccentHover : Palette.Accent) : Palette.Field,
             ButtonAppearance.Field => over ? Palette.Hover : Palette.Field,
-            ButtonAppearance.Segment => Selected || over ? Palette.Hover : Parent?.BackColor ?? Palette.Surface,
             _ => over ? Palette.Hover : Palette.Surface
         };
         Color? border = field || Selected || primary || Appearance == ButtonAppearance.Outline ? Palette.Line : null;
         if (Focused && ShowFocusCues)
             border = Palette.Signal;
         var bounds = new Rectangle(1, 1, Width - 3, Height - 3);
-        if (Appearance != ButtonAppearance.Segment)
-            DesktopDrawing.Shape(g, bounds, this.Px(10), background, border);
-        else if (Focused && ShowFocusCues)
-        {
-            using var focus = new Pen(Palette.Signal);
-            using var outline = DesktopDrawing.Rounded(Rectangle.Inflate(bounds, -2, -2), this.Px(9));
-            g.DrawPath(focus, outline);
-        }
+        DesktopDrawing.Shape(g, bounds, this.Px(10), background, border);
 
         var foreground = Enabled && primary ? Palette.AccentInk :
-            !Enabled || (field && !Selected) || (Appearance == ButtonAppearance.Segment && !Selected)
+            !Enabled || (field && !Selected)
                 ? Palette.Muted : Palette.Ink;
         var textArea = Rectangle.Inflate(bounds, -this.Px(12), 0);
         if (Indicator is { } indicator)
@@ -207,7 +174,7 @@ internal class DesktopButton : Button
 
         if (Glyph is { } glyph)
         {
-            using var iconFont = new Font("Segoe MDL2 Assets", field ? 11 : GlyphSize, GraphicsUnit.Point);
+            using var iconFont = new Font("Segoe MDL2 Assets", field ? 11 : 12, GraphicsUnit.Point);
             if (Text.Length == 0)
             {
                 TextRenderer.DrawText(g, glyph, iconFont, bounds, foreground, flags | TextFormatFlags.HorizontalCenter);
@@ -302,7 +269,16 @@ internal sealed class DesktopPicker : DesktopButton
             };
             menu.Items.Add(item);
         }
-        menu.Show(this, new Point(0, Height + this.Px(3)), ToolStripDropDownDirection.BelowRight);
+        int gap = this.Px(3);
+        int menuHeight = menu.GetPreferredSize(Size.Empty).Height;
+        bool openAbove = false;
+        if (FindForm() is { } form)
+        {
+            int top = form.PointToClient(PointToScreen(Point.Empty)).Y;
+            openAbove = top >= menuHeight + gap && top + Height + gap + menuHeight > form.ClientSize.Height;
+        }
+        menu.Show(this, new Point(0, openAbove ? -gap : Height + gap),
+            openAbove ? ToolStripDropDownDirection.AboveRight : ToolStripDropDownDirection.BelowRight);
         menu.Items.OfType<PickerItem>().FirstOrDefault(x => x.Checked)?.Select();
     }
 

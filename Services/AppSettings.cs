@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Win32;
+using NetworkAdapterSwitcher.Models;
 
 namespace NetworkAdapterSwitcher.Services;
 
@@ -10,6 +11,9 @@ internal sealed class AppSettings
     public string Language { get; set; } = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ru" ? "Russian" : "English";
     public bool ShowVirtual { get; set; }
     public bool ShowBluetooth { get; set; }
+    public NetworkEndpoint? NetworkOne { get; set; }
+    public NetworkEndpoint? NetworkTwo { get; set; }
+    public bool UnifiedPairSaved { get; set; }
     public bool ShowAdapters { get; set; }
     public Guid? AdapterAId { get; set; }
     public Guid? AdapterBId { get; set; }

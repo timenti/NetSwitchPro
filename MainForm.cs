@@ -13,25 +13,19 @@ internal sealed class MainForm : Form
     private readonly IAdapterService adapters = new WindowsAdapterService();
     private readonly bool administrator = IsAdministrator();
     private readonly List<string> journal = [];
-    private readonly Label interfaceLabel = TextLabel(10, "muted");
+    private readonly Label category = TextLabel(11, "muted", bold: true);
     private readonly Label activeLabel = TextLabel(10, "muted");
     private readonly Label current = TextLabel(19, bold: true);
     private readonly Label signal = TextLabel(9, "muted");
     private readonly Label pairTitle = TextLabel(13, bold: true);
-    private readonly Label accessTitle = TextLabel(10, "muted");
-    private readonly Label accessValue = TextLabel(15, bold: true);
-    private readonly Label accessDetail = TextLabel(9, "muted");
+    private readonly Label connectionDetail = TextLabel(10, "muted");
     private readonly Label hint = TextLabel(10, "muted");
     private readonly Label status = TextLabel(10, "muted");
-    private readonly DesktopButton wifiTab = MakeButton(ButtonAppearance.Segment, "");
-    private readonly ModeSelector modes;
-    private readonly DesktopButton adapterTab = MakeButton(ButtonAppearance.Segment, "");
     private readonly DesktopButton refresh = MakeButton(glyph: "");
     private readonly DesktopButton history = MakeButton(glyph: "");
     private readonly DesktopButton preferences = MakeButton(glyph: "");
     private readonly DesktopButton elevate = MakeButton(ButtonAppearance.Outline, glyph: "\uE72E");
     private readonly DesktopButton action = MakeButton(ButtonAppearance.Primary, "");
-    private readonly DesktopPicker wifiInterface = MakePicker();
     private const string AutomaticWifiProfile = "auto";
     private const string LoadWifiNetworks = "load";
     private const string WifiProfilePrefix = "profile:";
@@ -40,7 +34,6 @@ internal sealed class MainForm : Form
     private readonly PairCard first = new();
     private readonly PairCard second = new();
     private readonly TableLayoutPanel connection = Surface(2, 2);
-    private readonly TableLayoutPanel adapterAccess = Surface(2, 1);
     private readonly FlowLayoutPanel filters = new() { Dock = DockStyle.Fill, WrapContents = true, Margin = Padding.Empty };
     private readonly ToolTip tooltips = new();
     private readonly Icon captionIcon = DesktopDrawing.LoadCompactAppIcon(SystemInformation.SmallIconSize);
@@ -51,7 +44,6 @@ internal sealed class MainForm : Form
     private string? trayFeedback;
     private IReadOnlyList<WifiAdapter> wireless = [];
     private IReadOnlyList<NetworkAdapterInfo> wired = [];
-    private bool wifiMode;
     private bool busy;
     private bool hasShown;
     private bool refreshing;
@@ -60,18 +52,16 @@ internal sealed class MainForm : Form
     private string? wifiReadError, adapterReadError;
     private bool lightTheme;
 
-    public MainForm(bool forceAdapters)
+    public MainForm()
     {
-        wifiMode = !forceAdapters && !settings.ShowAdapters;
         lightTheme = settings.IsLight;
-        modes = new ModeSelector(wifiTab, adapterTab) { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 13) };
         SuspendLayout();
         Text = "NetSwitch Pro";
         AutoScaleDimensions = new SizeF(96, 96);
         AutoScaleMode = AutoScaleMode.Dpi;
         Font = new Font("Segoe UI", 10);
-        ClientSize = new Size(656, 507);
-        MinimumSize = new Size(607, 543);
+        ClientSize = new Size(656, 470);
+        MinimumSize = new Size(607, 504);
         StartPosition = FormStartPosition.CenterScreen;
         Icon = captionIcon;
         BuildLayout();
@@ -81,19 +71,11 @@ internal sealed class MainForm : Form
         PaintTheme(this);
         ResumeLayout(true);
 
-        wifiTab.Click += (_, _) => SetMode(true);
-        adapterTab.Click += (_, _) => SetMode(false);
-        modes.ModeRequested += SetMode;
         refresh.Click += async (_, _) => await RefreshAsync();
         history.Click += (_, _) => ShowJournal();
         preferences.Click += (_, _) => ShowPreferences();
         elevate.Click += (_, _) => Elevate();
-        action.Click += async (_, _) => await SwitchAsync();
-        wifiInterface.SelectionChangeCommitted += (_, _) => {
-            if (Selected(wifiInterface) is { } id)
-                settings.WifiAdapterId = Guid.Parse(id);
-            SaveAndRender();
-        };
+        action.Click += async (_, _) => await RunConnectionAsync(null, fromTray: false);
         first.Picker.SelectionChangeCommitted += (_, _) => SavePair(first);
         second.Picker.SelectionChangeCommitted += (_, _) => SavePair(second);
         showVirtual.CheckedChanged += (_, _) => ChangeFilters();
@@ -112,11 +94,11 @@ internal sealed class MainForm : Form
         notification.MouseClick += async (_, e) =>
         {
             if (e.Button == MouseButtons.Left)
-                await RunTrayConnectionAsync(null);
+                await RunConnectionAsync(null, fromTray: true);
             else if (e.Button == MouseButtons.Right)
                 await OpenTrayAsync(Cursor.Position);
         };
-        tray.ProfileRequested += async target => await RunTrayConnectionAsync(target);
+        tray.ProfileRequested += async target => await RunConnectionAsync(target, fromTray: true);
         tray.OpenRequested += RestoreMainWindow;
         tray.ExitRequested += ExitApplication;
 
@@ -144,7 +126,7 @@ internal sealed class MainForm : Form
     {
         var root = Grid(1, 7);
         root.Padding = new Padding(24, 19, 24, 16);
-        foreach (int height in new[] { 61, 57, 104, 41, 134 })
+        foreach (int height in new[] { 61, 30, 94, 41, 134 })
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 61));
@@ -172,7 +154,7 @@ internal sealed class MainForm : Form
             header.GetControlFromPosition(i, 0)!.Margin = new Padding(5, 6, 0, 6);
         root.Controls.Add(header, 0, 0);
 
-        root.Controls.Add(modes, 0, 1);
+        root.Controls.Add(category, 0, 1);
 
         connection.Padding = new Padding(15, 12, 15, 10);
         connection.Margin = new Padding(0, 0, 0, 12);
@@ -181,8 +163,16 @@ internal sealed class MainForm : Form
         connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
         connection.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         connection.Controls.Add(activeLabel, 0, 0);
-        connection.Controls.Add(interfaceLabel, 1, 0);
-        connection.Controls.Add(wifiInterface, 1, 1);
+        var tools = new Panel { Dock = DockStyle.Fill, Margin = new Padding(8, 0, 0, 0) };
+        var access = Grid(2, 1);
+        access.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        access.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 212));
+        access.Controls.Add(elevate, 1, 0);
+        elevate.Margin = new Padding(0, 1, 0, 1);
+        tools.Controls.Add(access);
+        tools.Controls.Add(connectionDetail);
+        connection.Controls.Add(tools, 1, 0);
+        connection.SetRowSpan(tools, 2);
 
         signal.Text = "●";
         var activeValue = Grid(2, 1);
@@ -193,12 +183,7 @@ internal sealed class MainForm : Form
         activeValue.Margin = new Padding(0, 0, 12, 0);
         connection.Controls.Add(activeValue, 0, 1);
 
-        var connectionHost = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 12) };
-        connection.Margin = Padding.Empty;
-        connectionHost.Controls.Add(connection);
-        connectionHost.Controls.Add(adapterAccess);
-        BuildAdapterAccess();
-        root.Controls.Add(connectionHost, 0, 2);
+        root.Controls.Add(connection, 0, 2);
 
         var pairHeader = Grid(2, 1);
         pairHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -239,33 +224,16 @@ internal sealed class MainForm : Form
         root.Controls.Add(footer, 0, 6);
     }
 
-    private void BuildAdapterAccess()
-    {
-        adapterAccess.Padding = new Padding(15, 10, 15, 10);
-        adapterAccess.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62));
-        adapterAccess.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38));
-        adapterAccess.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        var captions = Grid(1, 3);
-        captions.RowStyles.Add(new RowStyle(SizeType.Percent, 29));
-        captions.RowStyles.Add(new RowStyle(SizeType.Percent, 42));
-        captions.RowStyles.Add(new RowStyle(SizeType.Percent, 29));
-        captions.Controls.Add(accessTitle, 0, 0);
-        captions.Controls.Add(accessValue, 0, 1);
-        captions.Controls.Add(accessDetail, 0, 2);
-        adapterAccess.Controls.Add(captions, 0, 0);
-
-        elevate.Margin = new Padding(12, 15, 0, 15);
-        adapterAccess.Controls.Add(elevate, 1, 0);
-    }
-
     private string W(Word word) => UiWords.Get(settings.Language, word);
     private string Say(string ru, string en) => settings.Language == "Russian" ? ru : en;
 
     private void UpdateLabels()
     {
-        wifiTab.Text = W(Word.Wifi);
-        adapterTab.Text = W(Word.Adapters);
+        category.Text = W(Word.NetworksAndAdapters);
+        activeLabel.Text = W(Word.TrayCurrentConnection);
+        pairTitle.Text = W(Word.PairNetworks);
+        first.Caption.Text = W(Word.NetworkOne);
+        second.Caption.Text = W(Word.NetworkTwo);
         refresh.AccessibleName = W(Word.Refresh);
         history.AccessibleName = W(Word.Log);
         preferences.AccessibleName = W(Word.Settings);
@@ -278,17 +246,7 @@ internal sealed class MainForm : Form
         action.Text = W(Word.Switch);
     }
 
-    private void SetMode(bool showWifi)
-    {
-        if (busy || wifiMode == showWifi)
-            return;
-        wifiMode = showWifi;
-        settings.ShowAdapters = !showWifi;
-        Render();
-        SaveSettings();
-    }
-
-    private async Task RefreshAsync(bool background = false, bool wifiOnly = false)
+    private async Task RefreshAsync(bool background = false)
     {
         if (busy || refreshing)
             return;
@@ -300,10 +258,7 @@ internal sealed class MainForm : Form
         UpdateTray();
         try
         {
-            if (wifiOnly)
-                await ReadAsync(true);
-            else
-                await Task.WhenAll(ReadAsync(true), ReadAsync(false));
+            await ReadConnectionsAsync();
         }
         finally
         {
@@ -354,145 +309,156 @@ internal sealed class MainForm : Form
             adapterReadError = error;
     }
 
-    private WifiAdapter? ActiveInterface()
+    private ConnectionPair Pair => new(settings.NetworkOne, settings.NetworkTwo);
+
+    private NetworkAdapterInfo[] ConnectionAdapters()
     {
-        return wireless.FirstOrDefault(x => x.Id == settings.WifiAdapterId)
-            ?? wireless.FirstOrDefault(x => x.Connected)
-            ?? wireless.FirstOrDefault();
+        var result = wired.ToDictionary(adapter => adapter.Id);
+        foreach (var adapter in wireless)
+        {
+            if (result.TryGetValue(adapter.Id, out var existing))
+            {
+                if (adapter.Connected && !existing.Connected)
+                    result[adapter.Id] = existing with { Connected = true, Enabled = true };
+                continue;
+            }
+            result[adapter.Id] = new(adapter.Id, adapter.Description, adapter.Description,
+                "Wi-Fi", true, adapter.Connected, false, false);
+        }
+        return result.Values.OrderBy(adapter => adapter.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
     }
 
-    private IEnumerable<NetworkAdapterInfo> VisibleAdapters() => wired
-        .Where(x => (settings.ShowVirtual || !x.IsVirtual) && (settings.ShowBluetooth || !x.IsBluetooth));
+    private bool CanDisplayAdapter(NetworkAdapterInfo adapter) =>
+        (settings.ShowVirtual || !adapter.IsVirtual) && (settings.ShowBluetooth || !adapter.IsBluetooth);
 
-    private (NetworkAdapterInfo? First, NetworkAdapterInfo? Second) VisiblePair()
+    private async Task ReadConnectionsAsync()
     {
-        var rows = VisibleAdapters().ToArray();
-        return (Resolve(rows, settings.AdapterAId, settings.AdapterA), Resolve(rows, settings.AdapterBId, settings.AdapterB));
-    }
+        await Task.WhenAll(ReadAsync(true), ReadAsync(false));
+        if (settings.UnifiedPairSaved)
+            return;
 
-    private static NetworkAdapterInfo? Resolve(NetworkAdapterInfo[] rows, Guid? id, string? name) =>
-        id is { } value ? rows.FirstOrDefault(x => x.Id == value) :
-        rows.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        var inventory = ConnectionAdapters();
+        NetworkEndpoint? LegacyAdapter(Guid? id, string? name)
+        {
+            var resolved = id ?? inventory.FirstOrDefault(adapter => adapter.Name.Equals(name, StringComparison.OrdinalIgnoreCase))?.Id;
+            return resolved is { } value ? new(value, settings.AdapterWifiProfiles.GetValueOrDefault(value)) : null;
+        }
+
+        var wifiId = settings.WifiAdapterId
+            ?? wireless.FirstOrDefault(adapter => adapter.Connected)?.Id
+            ?? wireless.FirstOrDefault()?.Id;
+        bool hadWifiSelection = settings.WifiA is not null || settings.WifiB is not null;
+        var oldWifi = new ConnectionPair(
+            wifiId is { } firstWifi && settings.WifiA is { } a ? new(firstWifi, a) : null,
+            wifiId is { } secondWifi && settings.WifiB is { } b ? new(secondWifi, b) : null);
+        var oldAdapters = new ConnectionPair(LegacyAdapter(settings.AdapterAId, settings.AdapterA),
+            LegacyAdapter(settings.AdapterBId, settings.AdapterB));
+        if (!settings.ShowAdapters && hadWifiSelection && wifiId is null)
+            return;
+
+        var preferred = settings.ShowAdapters ? oldAdapters : oldWifi;
+        var fallback = settings.ShowAdapters ? oldWifi : oldAdapters;
+        var migrated = preferred.First is not null || preferred.Second is not null ? preferred : fallback;
+        if (migrated.First is null && migrated.Second is null)
+            return;
+
+        settings.NetworkOne = migrated.First;
+        settings.NetworkTwo = migrated.Second;
+        settings.UnifiedPairSaved = true;
+        SaveSettings();
+    }
 
     private void Render()
     {
         binding = true;
         SuspendLayout();
-        connection.SuspendLayout();
         try
         {
-            wifiTab.Selected = wifiMode;
-            adapterTab.Selected = !wifiMode;
-            modes.SelectMode(wifiMode, hasShown);
-            first.Picker.Enabled = second.Picker.Enabled = !busy;
-            status.Text = (wifiMode ? wifiReadError : adapterReadError) ?? (journal.Count > 0 ? journal[0] : "");
-            if (wifiMode)
-                RenderWifi();
-            else
-                RenderAdapters();
+            var inventory = ConnectionAdapters();
+            var pair = Pair;
+            var active = pair.Current(inventory, wireless);
+            var target = pair.ResolveTarget(inventory, wireless);
+            var currentAdapter = FindAdapter(inventory, active);
+            bool needsAdmin = pair.UsesDifferentAdapters && !administrator;
+            current.Text = active is null ? W(Word.Disconnect) : NameFor(active, inventory);
+            SetSignal(active is not null);
+            tooltips.SetToolTip(current, current.Text);
+            connectionDetail.Text = currentAdapter is null ? "" : AdapterDetail(currentAdapter);
+            connectionDetail.Visible = !needsAdmin;
+            elevate.Parent!.Visible = needsAdmin;
+            first.Picker.Enabled = second.Picker.Enabled = !busy && !refreshing;
+            status.Text = (journal.Count > 0 ? journal[0] : null) ??
+                (inventory.Length == 0 ? adapterReadError ?? wifiReadError : null) ?? "";
+            showVirtual.Checked = settings.ShowVirtual;
+            showBluetooth.Checked = settings.ShowBluetooth;
+
+            var choices = inventory.Where(adapter => CanDisplayAdapter(adapter) || pair.ContainsAdapter(adapter.Id))
+                .Select(adapter => new DesktopChoice(adapter.Id.ToString(), adapter.Name, AdapterDetail(adapter),
+                    active?.AdapterId == adapter.Id, OpensChoices: adapter.IsWifi)).ToArray();
+            BindEndpoint(first, pair.First, choices, inventory, active);
+            BindEndpoint(second, pair.Second, choices, inventory, active);
+
+            string? problem = target is null ? PairProblem(pair, inventory) : AvailabilityProblem(target, pair, inventory);
+            hint.Text = problem ?? (needsAdmin ? W(Word.ConnectionAdminRequired) : "");
+            SetAction(target is null ? null : NameFor(target, inventory), W(Word.SwitchPair));
+            action.Enabled = !busy && !refreshing && !needsAdmin && target is not null && problem is null;
             if (busy)
-            {
                 action.Text = W(Word.Busy);
-                action.Enabled = false;
-            }
-            if (refreshing)
-                action.Enabled = false;
             ShowFeedback();
             action.Invalidate();
         }
         finally
         {
-            connection.ResumeLayout(true);
             ResumeLayout(true);
             binding = false;
         }
         UpdateTray();
     }
 
-    private void RenderWifi()
+    private void BindEndpoint(PairCard card, NetworkEndpoint? endpoint, DesktopChoice[] choices,
+        NetworkAdapterInfo[] inventory, NetworkEndpoint? active)
     {
-        filters.Visible = adapterAccess.Visible = false;
-        connection.Visible = true;
-        pairTitle.Text = Say("Пара Wi-Fi-сетей", "Wi-Fi pair");
-        wifiInterface.AccessibleName = W(Word.Interface);
-        interfaceLabel.Text = W(Word.Interface);
-        activeLabel.Text = W(Word.Active);
-        first.Caption.Text = W(Word.FirstNetwork);
-        second.Caption.Text = W(Word.SecondNetwork);
-        first.Picker.Placeholder = second.Picker.Placeholder =
-            Say("Выберите сеть", "Choose a network");
-        var selected = ActiveInterface();
-        wifiInterface.Placeholder = Say("Нет адаптера", "No adapter");
-        Fill(wifiInterface, wireless.Select(x => new DesktopChoice(x.Id.ToString(), x.Description)), selected?.Id.ToString());
-        var profiles = selected?.Profiles ?? [];
-        Fill(first.Picker, profiles.Select(x => new DesktopChoice(x, x)), settings.WifiA);
-        Fill(second.Picker, profiles.Select(x => new DesktopChoice(x, x)), settings.WifiB);
-        string? a = Selected(first.Picker), b = Selected(second.Picker);
-        current.Text = selected?.ActiveProfile ?? (selected?.Connected == true ? W(Word.Unknown) : W(Word.Disconnect));
-        SetSignal(selected?.Connected == true);
-        tooltips.SetToolTip(current, current.Text);
-        tooltips.SetToolTip(wifiInterface, selected?.Description ?? "");
-        first.Detail.Text = WifiDetail(a, selected?.ActiveProfile);
-        second.Detail.Text = WifiDetail(b, selected?.ActiveProfile);
-        tooltips.SetToolTip(first.Detail, "");
-        tooltips.SetToolTip(second.Detail, "");
-        string? target = WifiService.ChooseTarget(a, b, selected?.ActiveProfile);
-        hint.Text = selected is null
-            ? Say("Windows не обнаружила Wi-Fi-адаптер.", "Windows did not detect a Wi-Fi adapter.")
-            : profiles.Length < 2
-                ? Say("Для пары нужны две сети, сохранённые в настройках Wi-Fi Windows.", "Save two Wi-Fi networks in Windows first.")
-                : target is null ? W(Word.PickWifi) : "";
-        SetAction(target, Say("Переключить Wi-Fi", "Switch Wi-Fi"));
+        var adapter = FindAdapter(inventory, endpoint);
+        var title = endpoint?.WifiProfile is { } profile && adapter is not null ? adapter.Name + " · " + profile : null;
+        card.Picker.Placeholder = endpoint is null ? W(Word.ChooseConnection) : endpoint.WifiProfile ?? W(Word.ConnectionUnavailable);
+        card.Picker.Bind(choices, adapter?.Id.ToString(), title);
+        card.Detail.Text = endpoint switch
+        {
+            null => "",
+            _ when adapter is null => W(Word.ConnectionUnavailable),
+            { WifiProfile: not null } => (ConnectionPair.Matches(active, endpoint) ? W(Word.Connected) : W(Word.Saved)) + "   ·   " + adapter.Type,
+            _ => AdapterDetail(adapter)
+        };
+        tooltips.SetToolTip(card.Picker, title ?? adapter?.Name ?? card.Picker.Placeholder);
+        tooltips.SetToolTip(card.Detail, adapter?.Description ?? "");
     }
 
-    private string WifiDetail(string? selected, string? active) =>
-        selected is null ? "" : selected == active ? W(Word.Connected) : W(Word.Saved);
-
-    private void RenderAdapters()
+    private string PairProblem(ConnectionPair pair, NetworkAdapterInfo[] inventory)
     {
-        connection.Visible = false;
-        adapterAccess.Visible = filters.Visible = true;
-        elevate.Visible = !administrator;
-        pairTitle.Text = Say("Пара адаптеров", "Adapter pair");
-        accessTitle.Text = Say("Управление адаптерами", "Adapter control");
-        accessValue.Text = administrator ? Say("Управление разрешено", "Control allowed") : Say("Режим просмотра", "View only");
-        accessDetail.Text = administrator
-            ? Say("Адаптеры можно включать и отключать", "You can enable and disable adapters")
-            : Say("Для переключения нужны права администратора", "Switching requires administrator rights");
-        showVirtual.Checked = settings.ShowVirtual;
-        showBluetooth.Checked = settings.ShowBluetooth;
-        first.Caption.Text = W(Word.FirstAdapter);
-        second.Caption.Text = W(Word.SecondAdapter);
-        first.Picker.Placeholder = second.Picker.Placeholder =
-            Say("Выберите адаптер", "Choose an adapter");
-        var (a, b) = VisiblePair();
-        var choices = VisibleAdapters().Select(x => new DesktopChoice(
-            x.Id.ToString(), x.Name, AdapterDetail(x), x.Connected, OpensChoices: x.IsWifi)).ToArray();
-        first.Picker.Bind(choices, a?.Id.ToString(), a is null ? null : AdapterCaption(a));
-        second.Picker.Bind(choices, b?.Id.ToString(), b is null ? null : AdapterCaption(b));
-        first.Detail.Text = AdapterDetail(a);
-        second.Detail.Text = AdapterDetail(b);
-        tooltips.SetToolTip(first.Detail, a?.Description ?? "");
-        tooltips.SetToolTip(second.Detail, b?.Description ?? "");
-        var target = AdapterTarget(a, b);
-        string? selectedProfile = target?.IsWifi == true
-            ? settings.AdapterWifiProfiles.GetValueOrDefault(target.Id)
-            : null;
-        bool profileAvailable = target is null || selectedProfile is null ||
-            WifiProfilesFor(target).Contains(selectedProfile, StringComparer.Ordinal);
-        hint.Text = target is null ? W(Word.PickAdapters) :
-            target.IsWifi && !profileAvailable ? W(Word.ChooseAdapterWifiProfile) : "";
-        SetAction(selectedProfile ?? target?.Name, Say("Переключить адаптер", "Switch adapter"));
-        action.Enabled = administrator && target is not null && (!target.IsWifi || profileAvailable);
+        if (!pair.HasBoth)
+            return W(Word.PickConnections);
+        if (!pair.UsesDifferentAdapters && FindAdapter(inventory, pair.First)?.IsWifi == true)
+            return W(Word.DifferentWifiProfiles);
+        return pair.First == pair.Second ? W(Word.PickConnections) : W(Word.ConnectionUnavailable);
     }
 
-    private static NetworkAdapterInfo? AdapterTarget(NetworkAdapterInfo? first, NetworkAdapterInfo? second) =>
-        first is not null && second is not null && first.Id != second.Id ? AdapterSwitch.ChooseTarget(first, second) : null;
+    private string? AvailabilityProblem(NetworkEndpoint endpoint, ConnectionPair pair, NetworkAdapterInfo[] inventory)
+    {
+        var adapter = FindAdapter(inventory, endpoint);
+        if (adapter is null || (pair.OtherAdapterFor(endpoint) is { } source && !inventory.Any(item => item.Id == source)))
+            return W(Word.ConnectionUnavailable);
+        if (endpoint.WifiProfile is { } profile && !WifiProfilesFor(adapter).Contains(profile, StringComparer.Ordinal))
+            return W(Word.ChooseAdapterWifiProfile);
+        if (pair.OtherAdapterFor(endpoint) is null && !adapter.Enabled)
+            return W(Word.LoadWifiProfiles);
+        return null;
+    }
 
-    private string AdapterCaption(NetworkAdapterInfo adapter) =>
-        adapter.IsWifi && settings.AdapterWifiProfiles.TryGetValue(adapter.Id, out var profile)
-            ? adapter.Name + " · " + profile
-            : adapter.Name;
+    private static NetworkAdapterInfo? FindAdapter(NetworkAdapterInfo[] inventory, NetworkEndpoint? endpoint) =>
+        endpoint is null ? null : inventory.FirstOrDefault(adapter => adapter.Id == endpoint.AdapterId);
+
+    private string NameFor(NetworkEndpoint endpoint, NetworkAdapterInfo[] inventory) =>
+        endpoint.WifiProfile ?? FindAdapter(inventory, endpoint)?.Name ?? W(Word.ConnectionUnavailable);
 
     private string[] WifiProfilesFor(NetworkAdapterInfo adapter)
     {
@@ -510,10 +476,11 @@ internal sealed class MainForm : Form
             new(AutomaticWifiProfile, adapter.Name, W(Word.WifiAutomatic))
         };
         options.AddRange(profiles.Select(name => new DesktopChoice(WifiProfilePrefix + name, name)));
-        if (administrator && !adapter.Enabled && profiles.Length == 0)
+        if (administrator && !adapter.Enabled)
             options.Add(new DesktopChoice(LoadWifiNetworks, W(Word.LoadWifiProfiles)));
 
-        string key = settings.AdapterWifiProfiles.TryGetValue(adapter.Id, out var selected)
+        var endpoint = card == first ? settings.NetworkOne : settings.NetworkTwo;
+        string key = endpoint?.AdapterId == adapter.Id && endpoint.WifiProfile is { } selected
             ? WifiProfilePrefix + selected
             : AutomaticWifiProfile;
         card.Picker.OpenChoices(options, key, option =>
@@ -529,7 +496,7 @@ internal sealed class MainForm : Form
 
     private async Task LoadAdapterWifiProfilesAsync(PairCard card, Guid adapterId)
     {
-        if (!administrator || busy || refreshing || wifiMode)
+        if (!administrator || busy || refreshing)
             return;
 
         SetBusy(true);
@@ -555,7 +522,7 @@ internal sealed class MainForm : Form
             SetBusy(false);
         }
 
-        if (VisibleAdapters().FirstOrDefault(item => item.Id == adapterId) is { } adapter)
+        if (ConnectionAdapters().FirstOrDefault(item => item.Id == adapterId) is { } adapter)
             OpenAdapterWifiChoices(card, adapter);
     }
 
@@ -580,84 +547,102 @@ internal sealed class MainForm : Form
     private void SetBusy(bool value)
     {
         busy = value;
-        modes.Enabled = refresh.Enabled = preferences.Enabled = !value;
-        wifiInterface.Enabled = elevate.Enabled = filters.Enabled = !value;
+        refresh.Enabled = preferences.Enabled = elevate.Enabled = filters.Enabled = !value;
         Render();
     }
 
-    private async Task SwitchAsync()
+    private async Task RunConnectionAsync(NetworkEndpoint? requested, bool fromTray)
     {
-        if (busy || refreshing || !action.Enabled)
+        if (busy || refreshing)
             return;
-        var selected = ActiveInterface();
-        string? firstSelection = Selected(first.Picker), secondSelection = Selected(second.Picker);
-        var (a, b) = VisiblePair();
-        var adapterTarget = AdapterTarget(a, b);
-        var wifiProfile = adapterTarget?.IsWifi == true
-            ? settings.AdapterWifiProfiles.GetValueOrDefault(adapterTarget.Id)
-            : null;
+
+        trayFeedback = null;
         SetBusy(true);
+        if (fromTray)
+            iconFeedback?.Begin(W(Word.Busy));
+        bool success = false;
+        string? message = null;
+        string? diagnostic = null;
         try
         {
-            if (wifiMode && selected is not null && firstSelection is not null && secondSelection is not null &&
-                WifiService.ChooseTarget(firstSelection, secondSelection, selected.ActiveProfile) is { } target)
+            await ReadConnectionsAsync();
+            var inventory = ConnectionAdapters();
+            var pair = Pair;
+            var destination = requested ?? pair.ResolveTarget(inventory, wireless);
+            if (destination is null)
             {
-                await RunWifiAsync(() => wifi.SwitchAsync(selected.Id, firstSelection, secondSelection, target), target);
+                message = PairProblem(pair, inventory);
+                return;
             }
-            else if (!wifiMode && administrator && a is not null && b is not null && adapterTarget is not null)
+
+            message = AvailabilityProblem(destination, pair, inventory);
+            if (message is not null)
+                return;
+
+            var otherAdapter = pair.OtherAdapterFor(destination);
+            if (otherAdapter.HasValue && !administrator)
+            {
+                message = W(Word.ConnectionAdminRequired);
+                if (fromTray && !tray.Visible)
+                    notification.ShowBalloonTip(3000, "NetSwitch Pro", message, ToolTipIcon.Info);
+                return;
+            }
+
+            var name = NameFor(destination, inventory);
+            trayFeedback = W(Word.Switch) + " " + name + "…";
+            if (fromTray)
+                iconFeedback?.Begin(trayFeedback);
+            UpdateTray();
+
+            if (otherAdapter is { } source)
             {
                 var outcome = await Task.Run(() => new AdapterSwitch(adapters, wifi: wifi)
-                    .ApplyAsync(a.Id, b.Id, adapterTarget.Id, wifiProfile));
-                var message = outcome.Result switch
+                    .ApplyAsync(source, destination.AdapterId, destination.AdapterId, destination.WifiProfile));
+                success = outcome.Result == AdapterSwitchResult.Changed;
+                diagnostic = outcome.Diagnostic;
+                message = outcome.Result switch
                 {
-                    AdapterSwitchResult.Changed => Say("Адаптер переключён.", "Adapter switched."),
-                    AdapterSwitchResult.TargetNotReady => Say("Второй адаптер не готов к переключению.", "The other adapter was not ready."),
-                    AdapterSwitchResult.WifiProfileRequired => Say("Выберите сохранённую сеть для Wi-Fi-адаптера.", "Choose a saved network for the Wi-Fi adapter."),
-                    AdapterSwitchResult.WifiProfileUnavailable => Say("Выбранный профиль Wi-Fi недоступен в Windows.", "The selected Wi-Fi profile is unavailable in Windows."),
+                    AdapterSwitchResult.Changed => W(Word.Connected) + " · " + name,
+                    AdapterSwitchResult.TargetNotReady => Say("Не удалось подтвердить готовность адаптера.", "Windows did not confirm the adapter was ready."),
+                    AdapterSwitchResult.WifiProfileRequired => W(Word.ChooseAdapterWifiProfile),
+                    AdapterSwitchResult.WifiProfileUnavailable => W(Word.ConnectionUnavailable),
                     AdapterSwitchResult.WifiNotConnected => Say("Wi-Fi не подключился. Исходное состояние восстановлено.", "Wi-Fi could not connect. The original adapter state was restored."),
                     AdapterSwitchResult.FailedRestored => Say("Переключение не удалось. Исходное состояние восстановлено.", "Switch failed. The original state was restored."),
                     _ => Say("Не удалось подтвердить восстановление адаптеров.", "Could not confirm that adapter state was restored.")
                 };
-                WriteJournal(message, outcome.Diagnostic);
             }
+            else if (destination.WifiProfile is { } profile)
+            {
+                var outcome = await Task.Run(() => wifi.ConnectProfileAsync(destination.AdapterId, profile));
+                success = outcome.Result == WifiSwitchResult.Connected;
+                diagnostic = outcome.Diagnostic;
+                message = outcome.Result switch
+                {
+                    WifiSwitchResult.Connected => W(Word.Connected) + " · " + name,
+                    WifiSwitchResult.PreviousRestored => Say("Не удалось переключиться. Прежняя сеть восстановлена.", "Switch failed. The previous network was restored."),
+                    WifiSwitchResult.ProfileUnavailable => W(Word.ConnectionUnavailable),
+                    WifiSwitchResult.RestoreUnconfirmed => Say("Не удалось подтвердить восстановление прежней сети.", "Could not confirm restoration of the previous network."),
+                    _ => Say("Windows не подтвердила подключение к ", "Windows did not confirm connection to ") + name
+                };
+            }
+            else
+                message = W(Word.PickConnections);
         }
         catch (Exception ex)
         {
-            WriteJournal(Say("Windows не выполнила переключение.", "Windows could not switch the connection."), ex.Message);
+            message = Say("Windows не выполнила переключение.", "Windows could not switch the connection.");
+            diagnostic = ex.Message;
         }
         finally
         {
-            await Task.WhenAll(ReadAsync(true), ReadAsync(false));
+            if (message is not null)
+                WriteJournal(message, diagnostic);
+            trayFeedback = success ? null : message;
+            await ReadConnectionsAsync();
             lastRead = Environment.TickCount64;
             SetBusy(false);
-        }
-    }
-
-    private async Task<bool> RunWifiAsync(Func<Task<WifiSwitchOutcome>> connect, string target, bool fromTray = false)
-    {
-        try
-        {
-            var outcome = await Task.Run(connect);
-            var message = outcome.Result switch
-            {
-                WifiSwitchResult.Connected => Say("Подключено к ", "Connected to ") + target,
-                WifiSwitchResult.PreviousRestored => Say("Не удалось переключиться. Прежняя сеть восстановлена.", "Switch failed. The previous network was restored."),
-                WifiSwitchResult.ProfileUnavailable => Say("Выбранный профиль Wi-Fi недоступен в Windows.", "The selected Wi-Fi profile is unavailable in Windows."),
-                WifiSwitchResult.RestoreUnconfirmed => Say("Не удалось подтвердить восстановление прежней сети.", "Could not confirm restoration of the previous network."),
-                _ => Say("Windows не подтвердила подключение к ", "Windows did not confirm connection to ") + target
-            };
             if (fromTray)
-                trayFeedback = outcome.Result == WifiSwitchResult.Connected ? null : message;
-            WriteJournal(message, outcome.Diagnostic);
-            return outcome.Result == WifiSwitchResult.Connected;
-        }
-        catch (Exception ex)
-        {
-            string message = Say("Windows не выполнила переключение.", "Windows could not switch the connection.");
-            if (fromTray)
-                trayFeedback = message;
-            WriteJournal(message, ex.Message);
-            return false;
+                iconFeedback?.Complete(success, message ?? W(Word.Disconnect));
         }
     }
 
@@ -673,88 +658,35 @@ internal sealed class MainForm : Form
             trayFeedback = null;
         UpdateSystemTheme();
         tray.OpenAt(location, TraySnapshot());
-        await RefreshAsync(background: true, wifiOnly: true);
+        await RefreshAsync(background: true);
     }
 
     private TrayState TraySnapshot()
     {
-        var active = ActiveInterface();
-        var saved = active?.Profiles ?? [];
-        var pair = new[] { settings.WifiA, settings.WifiB }.OfType<string>()
-            .Where(name => saved.Contains(name, StringComparer.Ordinal)).Distinct(StringComparer.Ordinal).ToArray();
-        string connectionName = active?.ActiveProfile ??
-            (active?.Connected == true ? W(Word.Unknown) : W(Word.Disconnect));
-        string? note = busy ? (trayFeedback ?? W(Word.Busy)) : refreshing && saved.Length == 0
-            ? W(Word.Busy) : trayFeedback ?? wifiReadError;
-        return new TrayState(settings.Language, lightTheme, connectionName, active?.Connected == true, pair,
-            saved.Order(StringComparer.CurrentCultureIgnoreCase).ToArray(), busy || refreshing, note,
-            pair.Length == 2 ? WifiService.ChooseTarget(pair[0], pair[1], active?.ActiveProfile) : null);
+        var inventory = ConnectionAdapters();
+        var pair = Pair;
+        var active = pair.Current(inventory, wireless);
+        var target = pair.ResolveTarget(inventory, wireless);
+        TrayEntry Entry(NetworkEndpoint endpoint) => new(endpoint, NameFor(endpoint, inventory),
+            ConnectionPair.Matches(active, endpoint), AvailabilityProblem(endpoint, pair, inventory) is null &&
+                (pair.OtherAdapterFor(endpoint).HasValue || endpoint.WifiProfile is not null));
+        var entries = new[] { pair.First, pair.Second }.OfType<NetworkEndpoint>().Distinct().Select(Entry).ToArray();
+        var wifiAdapter = inventory.FirstOrDefault(item => item.Id == active?.AdapterId && item.IsWifi)
+            ?? inventory.FirstOrDefault(item => pair.ContainsAdapter(item.Id) && item.IsWifi)
+            ?? inventory.FirstOrDefault(item => item.IsWifi && item.Enabled);
+        var saved = wifiAdapter is null ? [] : WifiProfilesFor(wifiAdapter)
+            .Order(StringComparer.CurrentCultureIgnoreCase)
+            .Select(profile => Entry(new(wifiAdapter.Id, profile))).ToArray();
+        string? note = trayFeedback ?? (busy || refreshing ? W(Word.Busy) : null);
+        return new TrayState(settings.Language, lightTheme, active is null ? W(Word.Disconnect) : NameFor(active, inventory),
+            entries, saved, busy || refreshing, note,
+            target is not null && AvailabilityProblem(target, pair, inventory) is null ? Entry(target) : null);
     }
 
     private void UpdateTray()
     {
         if (tray.Visible)
             tray.UpdateState(TraySnapshot());
-    }
-
-    private async Task RunTrayConnectionAsync(string? destination)
-    {
-        if (busy || refreshing)
-            return;
-
-        bool toggle = destination is null;
-        var firstProfile = settings.WifiA;
-        var secondProfile = settings.WifiB;
-        if (toggle && WifiService.ChooseTarget(firstProfile, secondProfile, null) is null)
-        {
-            var message = W(Word.PickWifi);
-            trayFeedback = message;
-            iconFeedback?.Complete(false, message);
-            notification.ShowBalloonTip(3000, "NetSwitch Pro", message, ToolTipIcon.Info);
-            UpdateTray();
-            return;
-        }
-
-        trayFeedback = W(Word.Busy);
-        SetBusy(true);
-        iconFeedback?.Begin(trayFeedback);
-        long started = Environment.TickCount64;
-        bool success = false;
-        try
-        {
-            await ReadAsync(true);
-            var selected = ActiveInterface();
-            if (toggle)
-                destination = WifiService.ChooseTarget(firstProfile, secondProfile, selected?.ActiveProfile);
-            if (selected is null || destination is null || !selected.Profiles.Contains(destination, StringComparer.Ordinal) ||
-                (toggle && (!selected.Profiles.Contains(firstProfile!, StringComparer.Ordinal) ||
-                            !selected.Profiles.Contains(secondProfile!, StringComparer.Ordinal))))
-            {
-                trayFeedback = wifiReadError ?? (toggle ? W(Word.PickWifi) : W(Word.NoSavedNetworks));
-                WriteJournal(trayFeedback);
-                return;
-            }
-
-            string target = destination;
-            trayFeedback = W(Word.Switch) + " " + target + "…";
-            iconFeedback?.Begin(trayFeedback);
-            UpdateTray();
-            success = await RunWifiAsync(
-                () => toggle
-                    ? wifi.SwitchAsync(selected.Id, firstProfile!, secondProfile!, target)
-                    : wifi.ConnectProfileAsync(selected.Id, target),
-                target, fromTray: true);
-        }
-        finally
-        {
-            await Task.WhenAll(ReadAsync(true), ReadAsync(false));
-            lastRead = Environment.TickCount64;
-            int remaining = (int)Math.Max(0, 350 - (Environment.TickCount64 - started));
-            if (remaining > 0)
-                await Task.Delay(remaining);
-            SetBusy(false);
-            iconFeedback?.Complete(success, trayFeedback ?? W(Word.Connected));
-        }
     }
 
     internal void RestoreMainWindow()
@@ -802,49 +734,28 @@ internal sealed class MainForm : Form
 
     private void SavePair(PairCard card)
     {
-        var key = Selected(card.Picker);
-        if (wifiMode)
-        {
-            if (card == first)
-                settings.WifiA = key;
-            else
-                settings.WifiB = key;
-            SaveAndRender();
+        if (!Guid.TryParse(card.Picker.SelectedKey, out var id) ||
+            ConnectionAdapters().FirstOrDefault(item => item.Id == id) is not { } adapter)
             return;
-        }
 
-        if (!Guid.TryParse(key, out var id) || VisibleAdapters().FirstOrDefault(item => item.Id == id) is not { } adapter)
-            return;
-        if (!adapter.IsWifi)
-        {
+        var previous = card == first ? settings.NetworkOne : settings.NetworkTwo;
+        if (previous?.AdapterId != id || !adapter.IsWifi)
             CommitAdapter(card, adapter, null);
-            return;
-        }
+        else
+            Render();
 
-        Render();
-        card.Picker.BeginInvoke(() => OpenAdapterWifiChoices(card, adapter));
+        if (adapter.IsWifi)
+            card.Picker.BeginInvoke(() => OpenAdapterWifiChoices(card, adapter));
     }
 
     private void CommitAdapter(PairCard card, NetworkAdapterInfo adapter, string? wifiProfile)
     {
+        var endpoint = new NetworkEndpoint(adapter.Id, wifiProfile);
         if (card == first)
-        {
-            settings.AdapterAId = adapter.Id;
-            settings.AdapterA = null;
-        }
+            settings.NetworkOne = endpoint;
         else
-        {
-            settings.AdapterBId = adapter.Id;
-            settings.AdapterB = null;
-        }
-
-        if (adapter.IsWifi)
-        {
-            if (wifiProfile is null)
-                settings.AdapterWifiProfiles.Remove(adapter.Id);
-            else
-                settings.AdapterWifiProfiles[adapter.Id] = wifiProfile;
-        }
+            settings.NetworkTwo = endpoint;
+        settings.UnifiedPairSaved = true;
         SaveAndRender();
     }
 
@@ -867,7 +778,7 @@ internal sealed class MainForm : Form
         SaveSettings();
         try
         {
-            using var child = Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--adapters")
+            using var child = Process.Start(new ProcessStartInfo(Application.ExecutablePath)
             {
                 UseShellExecute = true,
                 Verb = "runas"
@@ -1011,9 +922,9 @@ internal sealed class MainForm : Form
                 MessageBox.Show(this, W(Word.StartupFailed), "NetSwitch Pro", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
-        settings.Theme = Selected(theme) ?? "system";
+        settings.Theme = theme.SelectedKey ?? "system";
         lightTheme = settings.IsLight;
-        settings.Language = Selected(languages) ?? "English";
+        settings.Language = languages.SelectedKey ?? "English";
         UpdateLabels();
         Render();
         PaintTheme(this);
@@ -1061,8 +972,6 @@ internal sealed class MainForm : Form
             button.Palette = palette;
         if (control is DesktopToggle toggle)
             toggle.Palette = palette;
-        if (control is ModeSelector selector)
-            selector.Palette = palette;
         if (control is JournalView activity)
             activity.Palette = palette;
         if (control is Form form && form.IsHandleCreated)
@@ -1140,7 +1049,6 @@ internal sealed class MainForm : Form
         Dock = DockStyle.Fill, Margin = Padding.Empty
     };
 
-    private static string? Selected(DesktopPicker picker) => picker.SelectedKey;
     private static void Fill(DesktopPicker picker, IEnumerable<DesktopChoice> choices, string? selected) => picker.Bind(choices, selected);
 
     private sealed class PairCard

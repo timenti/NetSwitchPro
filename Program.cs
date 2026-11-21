@@ -15,10 +15,10 @@ internal static class Program
             return;
         }
 
-        RunWindow(args is ["--adapters"], args is [StartupRegistration.TrayArgument]);
+        RunWindow(args is [StartupRegistration.TrayArgument]);
     }
 
-    private static void RunWindow(bool forceAdapters, bool startInTray)
+    private static void RunWindow(bool startInTray)
     {
         using var identity = WindowsIdentity.GetCurrent();
         var administrator = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
@@ -45,7 +45,7 @@ internal static class Program
         try
         {
             ApplicationConfiguration.Initialize();
-            using var main = new MainForm(forceAdapters);
+            using var main = new MainForm();
             var listener = ThreadPool.RegisterWaitForSingleObject(show, (_, _) =>
             {
                 if (!main.IsHandleCreated || main.IsDisposed)

@@ -1,36 +1,41 @@
+using System.Drawing.Drawing2D;
+using NetworkAdapterSwitcher.Models;
+
 namespace NetworkAdapterSwitcher;
 
+internal sealed record TrayEntry(NetworkEndpoint Endpoint, string Name, bool Active, bool Available = true);
+
 internal sealed record TrayState(
-    string Language, bool IsLight, string Connection, bool Connected, string[] Pair, string[] Saved,
-    bool Busy, string? Feedback, string? Target);
+    string Language, bool IsLight, string Connection, TrayEntry[] Pair, TrayEntry[] Saved,
+    bool Busy, string? Feedback, TrayEntry? Target);
 
 internal sealed class TrayPanel : Form
 {
     private const int PageSize = 5;
 
-    private readonly Label caption = Label(9);
-    private readonly Label connection = Label(16, true);
+    private readonly Label caption = new HeaderLabel(9, FontStyle.Regular);
+    private readonly Label connection = new HeaderLabel(16, FontStyle.Bold);
     private readonly Label section = Label(10, true);
     private readonly Panel statusDivider = new();
     private readonly Panel footerDivider = new();
     private readonly Label feedback = Label(9);
     private readonly Label pageNumber = Label(9);
     private readonly DesktopButton[] profiles = Enumerable.Range(0, PageSize).Select(_ => Button(leftAligned: true)).ToArray();
-    private readonly DesktopButton switchPair = new() { Appearance = ButtonAppearance.Primary, Glyph = "", GlyphSize = 19 };
+    private readonly DesktopButton switchPair = new TraySwitchButton { Appearance = ButtonAppearance.Primary };
     private readonly DesktopButton all = Button(ButtonAppearance.Quiet);
     private readonly DesktopButton previous = Button();
     private readonly DesktopButton next = Button();
     private readonly DesktopButton open = Button();
     private readonly DesktopButton exit = Button();
     private readonly ToolTip tips = new();
-    private TrayState state = new("English", false, "", false, [], [], true, null, null);
+    private TrayState state = new("English", false, "", [], [], true, null, null);
     private DesktopPalette palette = DesktopPalette.Resolve(false);
     private Point anchor;
     private bool showAll;
     private int page;
     private bool positioning;
 
-    public event Action<string>? ProfileRequested;
+    public event Action<NetworkEndpoint>? ProfileRequested;
     public event Action? OpenRequested;
     public event Action? ExitRequested;
 
@@ -48,12 +53,12 @@ internal sealed class TrayPanel : Form
         switchPair.Click += (_, _) =>
         {
             if (!state.Busy && state.Target is { } target)
-                ProfileRequested?.Invoke(target);
+                ProfileRequested?.Invoke(target.Endpoint);
         };
         foreach (var row in profiles)
             row.Click += (_, _) =>
             {
-                if (row.Tag is string target && !state.Busy)
+                if (row.Tag is NetworkEndpoint target && !state.Busy)
                     ProfileRequested?.Invoke(target);
             };
         all.Click += (_, _) =>
@@ -114,7 +119,7 @@ internal sealed class TrayPanel : Form
                     button.Palette = palette;
             }
 
-            bool expanded = showAll || state.Pair.Length < 2;
+            bool expanded = showAll || state.Pair.Length == 0;
             var available = expanded ? state.Saved : state.Pair;
             int pageCount = Math.Max(1, (available.Length + PageSize - 1) / PageSize);
             page = Math.Clamp(page, 0, pageCount - 1);
@@ -122,7 +127,23 @@ internal sealed class TrayPanel : Form
 
             int width = this.Px(284), pad = this.Px(12), inner = width - 2 * pad;
             int y = this.Px(10);
-            int switchWidth = this.Px(46), titleWidth = inner - switchWidth - this.Px(9);
+            int switchWidth = this.Px(46);
+            int allWidth = 0;
+            bool hasMore = state.Pair.Length > 0 &&
+                state.Saved.Any(saved => !state.Pair.Any(entry => entry.Endpoint == saved.Endpoint));
+            all.Visible = hasMore;
+            if (hasMore)
+            {
+                string allLabel = W(Word.TrayAllShort) + " ›";
+                string pairLabel = W(Word.TrayPairShort);
+                all.Text = expanded ? pairLabel : allLabel;
+                allWidth = Math.Clamp(Math.Max(ButtonWidth(allLabel, all.Font), ButtonWidth(pairLabel, all.Font)),
+                    switchWidth, inner / 2);
+                tips.SetToolTip(all, expanded ? W(Word.PairNetworks) : W(Word.AllSavedNetworks));
+            }
+            int rightWidth = Math.Max(switchWidth, allWidth);
+            int switchLeft = width - pad - (rightWidth + switchWidth) / 2;
+            int titleWidth = switchLeft - pad - this.Px(9);
 
             connection.Text = state.Connection;
             Place(connection, pad, y, titleWidth, 27);
@@ -132,23 +153,21 @@ internal sealed class TrayPanel : Form
             caption.Text = W(Word.TrayCurrentConnection);
             Place(caption, pad, y + this.Px(28), titleWidth, 16);
 
-            switchPair.AccessibleName = state.Target is { } targetName ? W(Word.Switch) + " " + targetName : W(Word.SwitchPair);
+            switchPair.AccessibleName = state.Target is { } target ? W(Word.Switch) + " " + target.Name : W(Word.SwitchPair);
             tips.SetToolTip(switchPair, state.Target is null ? W(Word.PickWifi) : switchPair.AccessibleName);
             switchPair.Enabled = state.Target is not null && !state.Busy;
-            Place(switchPair, width - pad - switchWidth, y, switchWidth, 44);
+            switchPair.Palette = palette with
+            {
+                Accent = palette.Hover,
+                AccentHover = state.IsLight ? palette.Field : Color.FromArgb(58, 58, 58),
+                AccentInk = palette.Ink
+            };
+            Place(switchPair, switchLeft, y, switchWidth, 44);
             y += this.Px(49);
             PlaceDivider(statusDivider, pad, inner, ref y);
 
-            bool hasMore = state.Pair.Length == 2 && state.Saved.Length > state.Pair.Length;
-            all.Visible = hasMore;
-            int allWidth = 0;
             if (hasMore)
-            {
-                all.Text = expanded ? W(Word.TrayPairShort) : W(Word.TrayAllShort) + " ›";
-                allWidth = Math.Min(ButtonWidth(all), inner / 2);
-                tips.SetToolTip(all, expanded ? W(Word.PairNetworks) : W(Word.AllSavedNetworks));
                 Place(all, width - pad - allWidth, y, allWidth, 24);
-            }
             section.Text = expanded ? W(Word.SavedNetworks) : W(Word.PairNetworks);
             Place(section, pad, y, inner - allWidth, 24);
             y += this.Px(27);
@@ -160,22 +179,22 @@ internal sealed class TrayPanel : Form
                 row.Visible = exists;
                 if (!exists)
                     continue;
-                string target = slice[i];
-                bool active = state.Connected && target == state.Connection;
-                row.Tag = target;
-                row.Text = target;
-                row.AccessibleName = target + " · " + W(active ? Word.Connected : Word.Disconnect);
+                var entry = slice[i];
+                bool active = entry.Active;
+                row.Tag = entry.Endpoint;
+                row.Text = entry.Name;
+                row.AccessibleName = entry.Name + " · " + W(active ? Word.Connected : Word.Disconnect);
                 row.Indicator = active
                     ? (state.IsLight ? Color.FromArgb(24, 125, 69) : Color.FromArgb(130, 211, 162))
                     : (state.IsLight ? Color.FromArgb(178, 51, 51) : Color.FromArgb(231, 116, 116));
                 row.Selected = active;
-                row.Enabled = !active && !state.Busy;
+                row.Enabled = !active && !state.Busy && entry.Available;
                 tips.SetToolTip(row, row.AccessibleName);
                 Place(row, pad, y, inner, 30);
                 y += this.Px(33);
             }
 
-            var message = state.Feedback ?? (state.Saved.Length == 0 ? W(Word.NoSavedNetworks) : null);
+            var message = state.Feedback ?? (available.Length == 0 ? W(Word.NoSavedNetworks) : null);
             feedback.Visible = message is not null;
             if (message is not null)
             {
@@ -210,9 +229,9 @@ internal sealed class TrayPanel : Form
             open.Text = open.AccessibleName = W(Word.OpenApp);
             exit.Text = W(Word.Exit);
             exit.Enabled = !state.Busy;
-            int exitWidth = Math.Max(this.Px(70), ButtonWidth(exit));
+            int exitWidth = Math.Max(this.Px(70), ButtonWidth(exit.Text, exit.Font));
             int openWidth = inner - exitWidth - this.Px(6);
-            if (ButtonWidth(open) > openWidth)
+            if (ButtonWidth(open.Text, open.Font) > openWidth)
                 open.Text = "NetSwitch Pro";
             tips.SetToolTip(open, open.AccessibleName);
             Place(open, pad, y, openWidth, 30);
@@ -236,8 +255,8 @@ internal sealed class TrayPanel : Form
         y += this.Px(8);
     }
 
-    private int ButtonWidth(DesktopButton button) =>
-        TextRenderer.MeasureText(button.Text, button.Font, new Size(short.MaxValue, short.MaxValue),
+    private int ButtonWidth(string text, Font font) =>
+        TextRenderer.MeasureText(text, font, new Size(short.MaxValue, short.MaxValue),
             TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width + this.Px(29);
 
     private void Place(Control control, int x, int y, int width, int height) =>
@@ -255,7 +274,7 @@ internal sealed class TrayPanel : Form
 
     private void ChangePage(int step)
     {
-        if (!showAll && state.Pair.Length == 2)
+        if (!showAll && state.Pair.Length > 0)
             return;
         int max = Math.Max(0, (state.Saved.Length - 1) / PageSize);
         int index = Math.Clamp(page + step, 0, max);
@@ -303,6 +322,48 @@ internal sealed class TrayPanel : Form
         if (disposing)
             tips.Dispose();
         base.Dispose(disposing);
+    }
+
+    private sealed class HeaderLabel : Label
+    {
+        public HeaderLabel(float size, FontStyle style)
+        {
+            Font = new Font("Segoe UI", size, style);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix |
+                TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+        }
+    }
+
+    private sealed class TraySwitchButton : DesktopButton
+    {
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            var graphics = e.Graphics;
+            var smoothing = graphics.SmoothingMode;
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var pen = new Pen(Enabled ? Palette.AccentInk : Palette.Muted, this.Px(2))
+            {
+                StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round
+            };
+
+            float x = (Width - 1) / 2f, y = (Height - 1) / 2f, r = this.Px(10);
+            var circle = new RectangleF(x - r, y - r, r * 2, r * 2);
+            graphics.DrawArc(pen, circle, 205, 135);
+            graphics.DrawArc(pen, circle, 25, 135);
+            graphics.DrawLines(pen, [
+                new PointF(x + .94f * r, y - .86f * r), new PointF(x + .94f * r, y - .34f * r),
+                new PointF(x + .42f * r, y - .34f * r)]);
+            graphics.DrawLines(pen, [
+                new PointF(x - .94f * r, y + .86f * r), new PointF(x - .94f * r, y + .34f * r),
+                new PointF(x - .42f * r, y + .34f * r)]);
+            graphics.SmoothingMode = smoothing;
+        }
     }
 
     private static Label Label(float size, bool bold = false) => new()

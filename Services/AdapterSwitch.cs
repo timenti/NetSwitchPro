@@ -43,9 +43,12 @@ internal sealed class AdapterSwitch(
         bool sourceTouched = false;
         bool profileChanged = false;
         string? previousProfile = null;
+        string? sourceProfile = null;
 
         try
         {
+            if (source.IsWifi && source.Connected)
+                sourceProfile = FindWifi(source.Id)?.ActiveProfile;
             if (target.IsWifi && target.Enabled && wifiProfile is not null)
                 previousProfile = FindWifi(target.Id)?.ActiveProfile;
 
@@ -62,7 +65,7 @@ internal sealed class AdapterSwitch(
                 profileChanged = previousProfile is not null && previousProfile != wifiProfile;
                 var outcome = await ConnectWifiAsync(target.Id, wifiProfile);
                 if (outcome.Result != WifiSwitchResult.Connected &&
-                    outcome.RetryWithoutEthernet && source.Enabled && source.Connected && source.Type == "Ethernet")
+                    outcome.RetryWithoutEthernet && CanRetryWithoutEthernet())
                 {
                     // Some Windows configurations suppress WLAN while wired connectivity is present.
                     await DisableSourceAsync();
@@ -83,7 +86,15 @@ internal sealed class AdapterSwitch(
                     ? WifiReady(current, wifiProfile)
                     : !source.Connected || current.Connected);
 
-            if (!await ObserveAsync(target.Id, Ready, 20))
+            bool ready = await ObserveAsync(target.Id, Ready, 20);
+            if (!ready && target.IsWifi && wifiProfile is null && CanRetryWithoutEthernet() &&
+                FindWifi(target.Id)?.Profiles.Length > 0)
+            {
+                await DisableSourceAsync();
+                ready = await ObserveAsync(target.Id, Ready, 20);
+            }
+
+            if (!ready)
                 return await RestoreOutcome(target.IsWifi
                     ? wifiProfile is null ? AdapterSwitchResult.WifiProfileRequired : AdapterSwitchResult.WifiNotConnected
                     : AdapterSwitchResult.TargetNotReady);
@@ -100,6 +111,8 @@ internal sealed class AdapterSwitch(
             return await RestoreOutcome(AdapterSwitchResult.FailedRestored, ex.Message);
         }
 
+        bool CanRetryWithoutEthernet() => source.Enabled && source.Connected && source.Type == "Ethernet";
+
         async Task DisableSourceAsync()
         {
             if (!source.Enabled || sourceTouched)
@@ -112,7 +125,7 @@ internal sealed class AdapterSwitch(
 
         async Task<AdapterSwitchOutcome> RestoreOutcome(AdapterSwitchResult failure, string? diagnostic = null)
         {
-            bool restored = await RestoreAsync(source, target, sourceTouched, targetTouched, profileChanged ? previousProfile : null);
+            bool restored = await RestoreAsync(source, target, sourceTouched, targetTouched, sourceProfile, profileChanged ? previousProfile : null);
             return new(restored ? failure : AdapterSwitchResult.RestoreFailed, diagnostic);
         }
     }
@@ -159,7 +172,7 @@ internal sealed class AdapterSwitch(
     }
 
     private async Task<bool> RestoreAsync(NetworkAdapterInfo source, NetworkAdapterInfo target,
-        bool sourceTouched, bool targetTouched, string? previousProfile)
+        bool sourceTouched, bool targetTouched, string? sourceProfile, string? previousProfile)
     {
         try
         {
@@ -170,6 +183,10 @@ internal sealed class AdapterSwitch(
             if (sourceTouched && source.Enabled &&
                 (!current.TryGetValue(source.Id, out var old) || !old.Enabled))
                 adapters.SetEnabled(source.Id, true);
+
+            if (sourceTouched && sourceProfile is not null && FindWifi(source.Id)?.ActiveProfile != sourceProfile &&
+                (await ConnectWifiAsync(source.Id, sourceProfile)).Result != WifiSwitchResult.Connected)
+                return false;
 
             // Leave any replacement path enabled if recovering the old one cannot be confirmed.
             if (source.Enabled && (sourceTouched || source.Connected) &&
