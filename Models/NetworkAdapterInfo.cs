@@ -1,14 +1,12 @@
 namespace NetworkAdapterSwitcher.Models;
 
 internal sealed record NetworkAdapterInfo(
+    Guid Id,
     string Name,
-    string FullName,
+    string Description,
     string Type,
-    bool IsAdminEnabled,
-    bool IsConnected,
-    string? IPv4Address,
+    bool Enabled,
+    bool Connected,
     bool IsVirtual,
-    bool IsBluetooth)
-{
-    public string StatusText => IsAdminEnabled ? "Enabled" : "Disabled";
-}
+    bool IsBluetooth,
+    string? IPv4 = null);
