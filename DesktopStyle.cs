@@ -251,17 +251,37 @@ internal sealed class DesktopPicker : DesktopButton
             return;
 
         menu.Font = Font;
-        menu.Padding = new Padding(this.Px(5));
+        int padding = this.Px(5), gap = this.Px(3);
+        int rowHeight = this.Px(choices.Any(choice => choice.Detail is not null) ? 48 : 35);
         int desiredWidth = Math.Max(this.Px(165), Width);
+        var origin = PointToScreen(Point.Empty);
+        var usable = Screen.FromPoint(origin).WorkingArea;
+        if (FindForm() is { } form)
+            usable = Rectangle.Intersect(usable, form.RectangleToScreen(form.ClientRectangle));
+
+        int above = Math.Max(0, origin.Y - usable.Top - gap);
+        int below = Math.Max(0, usable.Bottom - origin.Y - Height - gap);
+        int contentHeight = rowHeight * choices.Count + 2 * padding;
+        int preferredHeight = Math.Min(this.Px(252), contentHeight);
+        bool openAbove = below < preferredHeight && above > below;
+        int availableHeight = Math.Min(this.Px(252), openAbove ? above : below);
+        int slots = Math.Clamp((availableHeight - 2 * padding - this.Px(4)) / rowHeight, 1, choices.Count);
+        bool scrolling = slots < choices.Count;
+        menu.Padding = new Padding(padding, padding, padding + (scrolling ? this.Px(12) : 0), padding);
         menu.MinimumSize = new Size(desiredWidth, 0);
         menu.Renderer = new MenuRenderer(Palette);
         menu.BackColor = Palette.Surface;
         while (menu.Items.Count > 0)
             menu.Items[0].Dispose();
 
-        foreach (var choice in choices)
+        int selectedIndex = -1;
+        for (int i = 0; i < choices.Count; i++)
         {
-            var item = new PickerItem(choice, Palette, desiredWidth - menu.Padding.Horizontal, DeviceDpi, choice.Key == selection);
+            var choice = choices[i];
+            bool selected = choice.Key == selection;
+            if (selected)
+                selectedIndex = i;
+            var item = new PickerItem(choice, Palette, desiredWidth - menu.Padding.Horizontal, rowHeight, DeviceDpi, selected);
             item.Click += (_, _) =>
             {
                 menu.Close(ToolStripDropDownCloseReason.ItemClicked);
@@ -269,17 +289,11 @@ internal sealed class DesktopPicker : DesktopButton
             };
             menu.Items.Add(item);
         }
-        int gap = this.Px(3);
-        int menuHeight = menu.GetPreferredSize(Size.Empty).Height;
-        bool openAbove = false;
-        if (FindForm() is { } form)
-        {
-            int top = form.PointToClient(PointToScreen(Point.Empty)).Y;
-            openAbove = top >= menuHeight + gap && top + Height + gap + menuHeight > form.ClientSize.Height;
-        }
+        menu.SetViewport(slots, selectedIndex, Palette);
         menu.Show(this, new Point(0, openAbove ? -gap : Height + gap),
             openAbove ? ToolStripDropDownDirection.AboveRight : ToolStripDropDownDirection.BelowRight);
-        menu.Items.OfType<PickerItem>().FirstOrDefault(x => x.Checked)?.Select();
+        if (selectedIndex >= 0)
+            menu.Items[selectedIndex].Select();
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -306,13 +320,13 @@ internal sealed class DesktopPicker : DesktopButton
         private readonly Size rowSize;
         private readonly int dpi;
 
-        internal PickerItem(DesktopChoice choice, DesktopPalette palette, int width, int dpi, bool selected)
+        internal PickerItem(DesktopChoice choice, DesktopPalette palette, int width, int height, int dpi, bool selected)
             : base(choice.Caption.Replace("&", "&&"))
         {
             this.choice = choice;
             this.palette = palette;
             this.dpi = dpi;
-            rowSize = new Size(width, Px(choice.Detail is null ? 34 : 51));
+            rowSize = new Size(width, height);
             Checked = selected;
             AccessibleName = choice.Caption;
             AccessibleDescription = choice.Detail ?? "";
@@ -359,10 +373,150 @@ internal sealed class DesktopPicker : DesktopButton
 
     private sealed class PickerMenu : ContextMenuStrip
     {
+        private DesktopPalette palette = DesktopPalette.Resolve(false);
+        private int slots;
+        private int first;
+        private bool dragging;
+        private int dragOrigin, dragOffset;
+
+        private int Limit => Math.Max(0, Items.Count - slots);
+        private Rectangle Track => new(Width - this.Px(11), Padding.Top, this.Px(6),
+            Math.Max(1, Height - Padding.Vertical));
+
         public PickerMenu()
         {
             ShowImageMargin = ShowCheckMargin = false;
             DropShadowEnabled = false;
+        }
+
+        public void SetViewport(int rows, int selected, DesktopPalette colors)
+        {
+            palette = colors;
+            slots = rows;
+            first = -1;
+            ScrollTo(selected - rows + 1);
+        }
+
+        private void ScrollTo(int row)
+        {
+            row = Math.Clamp(row, 0, Limit);
+            if (row == first)
+                return;
+
+            first = row;
+            SuspendLayout();
+            try
+            {
+                for (int i = 0; i < Items.Count; i++)
+                    Items[i].Available = i >= first && i < first + slots;
+            }
+            finally
+            {
+                ResumeLayout(true);
+                Invalidate();
+            }
+        }
+
+        private Rectangle Thumb(Rectangle track)
+        {
+            int height = Math.Clamp(track.Height * slots / Math.Max(1, Items.Count),
+                Math.Min(this.Px(22), track.Height), track.Height);
+            int y = track.Y + (track.Height - height) * first / Math.Max(1, Limit);
+            return new Rectangle(track.X, y, track.Width, height);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            if (Limit <= 0)
+                return;
+
+            var track = Track;
+            DesktopDrawing.Shape(e.Graphics, track, this.Px(3), palette.Field);
+            DesktopDrawing.Shape(e.Graphics, Thumb(track), this.Px(3), dragging ? palette.Muted : palette.Line);
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            if (Limit > 0)
+                ScrollTo(first - Math.Sign(e.Delta) * 2);
+            else
+                base.OnMouseWheel(e);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            var track = Track;
+            if (Limit <= 0 || e.Button != MouseButtons.Left ||
+                !Rectangle.Inflate(track, this.Px(4), 0).Contains(e.Location))
+            {
+                base.OnMouseDown(e);
+                return;
+            }
+
+            var thumb = Thumb(track);
+            if (!thumb.Contains(e.Location))
+                ScrollTo(first + (e.Y < thumb.Top ? -slots : slots));
+            dragging = true;
+            dragOrigin = e.Y;
+            dragOffset = first;
+            Capture = true;
+            Invalidate();
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            if (!dragging)
+            {
+                base.OnMouseMove(e);
+                return;
+            }
+
+            var track = Track;
+            int travel = Math.Max(1, track.Height - Thumb(track).Height);
+            ScrollTo(dragOffset + (e.Y - dragOrigin) * Limit / travel);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            if (dragging && e.Button == MouseButtons.Left)
+                Capture = false;
+            else
+                base.OnMouseUp(e);
+        }
+
+        protected override void OnMouseCaptureChanged(EventArgs e)
+        {
+            base.OnMouseCaptureChanged(e);
+            dragging = false;
+            Invalidate();
+        }
+
+        protected override bool ProcessCmdKey(ref Message m, Keys keys) =>
+            MoveSelection(keys) || base.ProcessCmdKey(ref m, keys);
+
+        protected override bool ProcessDialogKey(Keys keys) =>
+            MoveSelection(keys) || base.ProcessDialogKey(keys);
+
+        private bool MoveSelection(Keys key)
+        {
+            if (Limit <= 0 || key is not (Keys.Up or Keys.Down or Keys.PageUp or Keys.PageDown or Keys.Home or Keys.End))
+                return false;
+
+            int index = Items.Cast<ToolStripItem>().ToList().FindIndex(item => item.Selected);
+            int current = index >= 0 ? index : first;
+            int next = Math.Clamp(key switch
+            {
+                Keys.Up => current - 1,
+                Keys.Down => index < 0 ? first : current + 1,
+                Keys.PageUp => current - slots,
+                Keys.PageDown => current + slots,
+                Keys.Home => 0,
+                _ => Items.Count - 1
+            }, 0, Items.Count - 1);
+            ScrollTo(next < first ? next : Math.Max(first, next - slots + 1));
+            Items[next].Select();
+            return true;
         }
 
         protected override void OnOpening(CancelEventArgs e)

@@ -15,8 +15,7 @@ internal sealed class MainForm : Form
     private readonly List<string> journal = [];
     private readonly Label category = TextLabel(11, "muted", bold: true);
     private readonly Label activeLabel = TextLabel(10, "muted");
-    private readonly Label current = TextLabel(19, bold: true);
-    private readonly Label signal = TextLabel(9, "muted");
+    private readonly Label current = TextLabel(23, bold: true);
     private readonly Label pairTitle = TextLabel(13, bold: true);
     private readonly Label connectionDetail = TextLabel(10, "muted");
     private readonly Label hint = TextLabel(10, "muted");
@@ -34,7 +33,7 @@ internal sealed class MainForm : Form
     private readonly PairCard first = new();
     private readonly PairCard second = new();
     private readonly TableLayoutPanel connection = Surface(2, 2);
-    private readonly FlowLayoutPanel filters = new() { Dock = DockStyle.Fill, WrapContents = true, Margin = Padding.Empty };
+    private readonly TableLayoutPanel filters = Grid(1, 2);
     private readonly ToolTip tooltips = new();
     private readonly Icon captionIcon = DesktopDrawing.LoadCompactAppIcon(SystemInformation.SmallIconSize);
     private readonly NotifyIcon notification = new() { Text = "NetSwitch Pro" };
@@ -154,51 +153,42 @@ internal sealed class MainForm : Form
             header.GetControlFromPosition(i, 0)!.Margin = new Padding(5, 6, 0, 6);
         root.Controls.Add(header, 0, 0);
 
+        category.Margin = pairTitle.Margin = new Padding(10, 0, 0, 0);
         root.Controls.Add(category, 0, 1);
 
-        connection.Padding = new Padding(15, 12, 15, 10);
-        connection.Margin = new Padding(0, 0, 0, 12);
-        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46));
-        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54));
-        connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        var connectionRow = Grid(2, 1);
+        connectionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        connectionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 156));
+        connectionRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        connectionRow.Margin = new Padding(0, 0, 0, 6);
+
+        connection.Padding = new Padding(16, 9, 16, 10);
+        connection.Margin = new Padding(0, 0, 12, 0);
+        connection.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        connection.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        connection.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         connection.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        activeLabel.Margin = new Padding(4, 0, 0, 0);
         connection.Controls.Add(activeLabel, 0, 0);
-        var tools = new Panel { Dock = DockStyle.Fill, Margin = new Padding(8, 0, 0, 0) };
-        var access = Grid(2, 1);
-        access.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        access.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 212));
-        access.Controls.Add(elevate, 1, 0);
-        elevate.Margin = new Padding(0, 1, 0, 1);
-        tools.Controls.Add(access);
-        tools.Controls.Add(connectionDetail);
-        connection.Controls.Add(tools, 1, 0);
-        connection.SetRowSpan(tools, 2);
+        connection.SetColumnSpan(activeLabel, 2);
+        connection.Controls.Add(current, 0, 1);
+        connectionDetail.AutoSize = true;
+        connectionDetail.Margin = new Padding(10, 0, 0, 0);
+        connectionDetail.TextAlign = ContentAlignment.MiddleRight;
+        connection.Controls.Add(connectionDetail, 1, 1);
+        connectionRow.Controls.Add(connection, 0, 0);
 
-        signal.Text = "●";
-        var activeValue = Grid(2, 1);
-        activeValue.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 18));
-        activeValue.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        activeValue.Controls.Add(signal, 0, 0);
-        activeValue.Controls.Add(current, 1, 0);
-        activeValue.Margin = new Padding(0, 0, 12, 0);
-        connection.Controls.Add(activeValue, 0, 1);
-
-        root.Controls.Add(connection, 0, 2);
-
-        var pairHeader = Grid(2, 1);
-        pairHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        pairHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 248));
-        pairHeader.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        pairHeader.Controls.Add(pairTitle, 0, 0);
-        filters.FlowDirection = FlowDirection.RightToLeft;
-        filters.WrapContents = false;
-        filters.Padding = new Padding(0, 3, 0, 0);
-        showVirtual.Width = 132;
-        showBluetooth.Width = 104;
-        filters.Controls.Add(showBluetooth);
-        filters.Controls.Add(showVirtual);
-        pairHeader.Controls.Add(filters, 1, 0);
-        root.Controls.Add(pairHeader, 0, 3);
+        filters.Margin = new Padding(0, 5, 0, 5);
+        filters.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        filters.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        showVirtual.Dock = showBluetooth.Dock = DockStyle.Fill;
+        showVirtual.Margin = new Padding(0, 0, 0, 3);
+        showBluetooth.Margin = new Padding(0, 3, 0, 0);
+        filters.Controls.Add(showVirtual, 0, 0);
+        filters.Controls.Add(showBluetooth, 0, 1);
+        connectionRow.Controls.Add(filters, 1, 0);
+        root.Controls.Add(connectionRow, 0, 2);
+        root.Controls.Add(pairTitle, 0, 3);
 
         var pair = Surface(1, 3);
         pair.Padding = new Padding(15, 4, 15, 4);
@@ -219,8 +209,10 @@ internal sealed class MainForm : Form
         feedback.Controls.Add(hint);
         feedback.Controls.Add(status);
         footer.Controls.Add(feedback, 0, 0);
-        action.Margin = new Padding(0, 6, 0, 6);
-        footer.Controls.Add(action, 1, 0);
+        var actions = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0, 6, 0, 6) };
+        actions.Controls.Add(action);
+        actions.Controls.Add(elevate);
+        footer.Controls.Add(actions, 1, 0);
         root.Controls.Add(footer, 0, 6);
     }
 
@@ -381,11 +373,10 @@ internal sealed class MainForm : Form
             var currentAdapter = FindAdapter(inventory, active);
             bool needsAdmin = pair.UsesDifferentAdapters && !administrator;
             current.Text = active is null ? W(Word.Disconnect) : NameFor(active, inventory);
-            SetSignal(active is not null);
             tooltips.SetToolTip(current, current.Text);
-            connectionDetail.Text = currentAdapter is null ? "" : AdapterDetail(currentAdapter);
-            connectionDetail.Visible = !needsAdmin;
-            elevate.Parent!.Visible = needsAdmin;
+            connectionDetail.Text = currentAdapter?.IPv4 is { } ipv4 ? "IP  " + ipv4 : "";
+            elevate.Visible = needsAdmin;
+            action.Visible = !needsAdmin;
             first.Picker.Enabled = second.Picker.Enabled = !busy && !refreshing;
             status.Text = (journal.Count > 0 ? journal[0] : null) ??
                 (inventory.Length == 0 ? adapterReadError ?? wifiReadError : null) ?? "";
@@ -524,12 +515,6 @@ internal sealed class MainForm : Form
 
         if (ConnectionAdapters().FirstOrDefault(item => item.Id == adapterId) is { } adapter)
             OpenAdapterWifiChoices(card, adapter);
-    }
-
-    private void SetSignal(bool active)
-    {
-        signal.Tag = active ? "signal" : "muted";
-        signal.ForeColor = active ? DesktopPalette.Resolve(lightTheme).Signal : DesktopPalette.Resolve(lightTheme).Muted;
     }
 
     private string AdapterDetail(NetworkAdapterInfo? item) =>
@@ -965,7 +950,6 @@ internal sealed class MainForm : Form
         {
             SurfaceGrid => palette.Line,
             _ when Equals(control.Tag, "muted") => palette.Muted,
-            _ when Equals(control.Tag, "signal") => palette.Signal,
             _ => palette.Ink
         };
         if (control is DesktopButton button)

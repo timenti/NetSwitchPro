@@ -14,7 +14,7 @@ internal sealed class TrayPanel : Form
     private const int PageSize = 5;
 
     private readonly Label caption = new HeaderLabel(9, FontStyle.Regular);
-    private readonly Label connection = new HeaderLabel(16, FontStyle.Bold);
+    private readonly Label connection = new HeaderLabel(15, FontStyle.Bold, compactSize: 13);
     private readonly Label section = Label(10, true);
     private readonly Panel statusDivider = new();
     private readonly Panel footerDivider = new();
@@ -125,16 +125,16 @@ internal sealed class TrayPanel : Form
             page = Math.Clamp(page, 0, pageCount - 1);
             var slice = available.Skip(page * PageSize).Take(PageSize).ToArray();
 
-            int width = this.Px(284), pad = this.Px(12), inner = width - 2 * pad;
+            int width = this.Px(244), pad = this.Px(11), inner = width - 2 * pad;
             int y = this.Px(10);
-            int switchWidth = this.Px(46);
+            int switchWidth = this.Px(42);
             int allWidth = 0;
             bool hasMore = state.Pair.Length > 0 &&
                 state.Saved.Any(saved => !state.Pair.Any(entry => entry.Endpoint == saved.Endpoint));
             all.Visible = hasMore;
             if (hasMore)
             {
-                string allLabel = W(Word.TrayAllShort) + " ›";
+                string allLabel = W(Word.TrayAllShort);
                 string pairLabel = W(Word.TrayPairShort);
                 all.Text = expanded ? pairLabel : allLabel;
                 allWidth = Math.Clamp(Math.Max(ButtonWidth(allLabel, all.Font), ButtonWidth(pairLabel, all.Font)),
@@ -143,7 +143,7 @@ internal sealed class TrayPanel : Form
             }
             int rightWidth = Math.Max(switchWidth, allWidth);
             int switchLeft = width - pad - (rightWidth + switchWidth) / 2;
-            int titleWidth = switchLeft - pad - this.Px(9);
+            int titleWidth = switchLeft - pad - this.Px(6);
 
             connection.Text = state.Connection;
             Place(connection, pad, y, titleWidth, 27);
@@ -162,7 +162,7 @@ internal sealed class TrayPanel : Form
                 AccentHover = state.IsLight ? palette.Field : Color.FromArgb(58, 58, 58),
                 AccentInk = palette.Ink
             };
-            Place(switchPair, switchLeft, y, switchWidth, 44);
+            Place(switchPair, switchLeft, y, switchWidth, 42);
             y += this.Px(49);
             PlaceDivider(statusDivider, pad, inner, ref y);
 
@@ -226,13 +226,12 @@ internal sealed class TrayPanel : Form
             }
 
             PlaceDivider(footerDivider, pad, inner, ref y);
-            open.Text = open.AccessibleName = W(Word.OpenApp);
+            open.AccessibleName = W(Word.OpenApp);
+            open.Text = "NetSwitch Pro";
             exit.Text = W(Word.Exit);
             exit.Enabled = !state.Busy;
             int exitWidth = Math.Max(this.Px(70), ButtonWidth(exit.Text, exit.Font));
             int openWidth = inner - exitWidth - this.Px(6);
-            if (ButtonWidth(open.Text, open.Font) > openWidth)
-                open.Text = "NetSwitch Pro";
             tips.SetToolTip(open, open.AccessibleName);
             Place(open, pad, y, openWidth, 30);
             Place(exit, pad + openWidth + this.Px(6), y, exitWidth, 30);
@@ -326,16 +325,30 @@ internal sealed class TrayPanel : Form
 
     private sealed class HeaderLabel : Label
     {
-        public HeaderLabel(float size, FontStyle style)
+        private const TextFormatFlags TextFlags = TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding |
+            TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+        private readonly Font? compactFont;
+
+        public HeaderLabel(float size, FontStyle style, float? compactSize = null)
         {
             Font = new Font("Segoe UI", size, style);
+            if (compactSize is { } compact)
+                compactFont = new Font(Font.FontFamily, compact, style);
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor,
-                TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix |
-                TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+            var font = compactFont is not null &&
+                TextRenderer.MeasureText(e.Graphics, Text, Font, Size.Empty, TextFlags).Width > Width ? compactFont : Font;
+            TextRenderer.DrawText(e.Graphics, Text, font, ClientRectangle, ForeColor,
+                TextFlags | TextFormatFlags.EndEllipsis);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                compactFont?.Dispose();
+            base.Dispose(disposing);
         }
     }
 
@@ -352,7 +365,7 @@ internal sealed class TrayPanel : Form
                 StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round
             };
 
-            float x = (Width - 1) / 2f, y = (Height - 1) / 2f, r = this.Px(10);
+            float x = (Width - 1) / 2f, y = (Height - 1) / 2f, r = this.Px(9);
             var circle = new RectangleF(x - r, y - r, r * 2, r * 2);
             graphics.DrawArc(pen, circle, 205, 135);
             graphics.DrawArc(pen, circle, 25, 135);
