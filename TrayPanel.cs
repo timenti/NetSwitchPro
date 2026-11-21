@@ -11,15 +11,17 @@ internal sealed class TrayPanel : Form
     private readonly Label caption = Label(9);
     private readonly Label connection = Label(16, true);
     private readonly Label section = Label(10, true);
+    private readonly Panel statusDivider = new();
+    private readonly Panel footerDivider = new();
     private readonly Label feedback = Label(9);
     private readonly Label pageNumber = Label(9);
-    private readonly DesktopButton[] profiles = Enumerable.Range(0, PageSize).Select(_ => Button(ButtonAppearance.Outline)).ToArray();
-    private readonly DesktopButton switchPair = Button(ButtonAppearance.Primary);
-    private readonly DesktopButton all = Button();
+    private readonly DesktopButton[] profiles = Enumerable.Range(0, PageSize).Select(_ => Button(leftAligned: true)).ToArray();
+    private readonly DesktopButton switchPair = new() { Appearance = ButtonAppearance.Primary, Glyph = "", GlyphSize = 19 };
+    private readonly DesktopButton all = Button(ButtonAppearance.Quiet);
     private readonly DesktopButton previous = Button();
     private readonly DesktopButton next = Button();
-    private readonly DesktopButton open = Button();
-    private readonly DesktopButton exit = Button();
+    private readonly DesktopButton open = Button(ButtonAppearance.Quiet, leftAligned: true);
+    private readonly DesktopButton exit = Button(ButtonAppearance.Quiet);
     private readonly ToolTip tips = new();
     private TrayState state = new("English", false, "", false, [], [], true, null, null);
     private DesktopPalette palette = DesktopPalette.Resolve(false);
@@ -42,7 +44,7 @@ internal sealed class TrayPanel : Form
         TopMost = true;
         DoubleBuffered = true;
 
-        Controls.AddRange([caption, connection, switchPair, section, .. profiles, all, previous, pageNumber, next, feedback, open, exit]);
+        Controls.AddRange([caption, connection, statusDivider, switchPair, section, .. profiles, all, previous, pageNumber, next, feedback, footerDivider, open, exit]);
         switchPair.Click += (_, _) =>
         {
             if (!state.Busy && state.Target is { } target)
@@ -85,7 +87,10 @@ internal sealed class TrayPanel : Form
     public void UpdateState(TrayState nextState)
     {
         state = nextState;
-        palette = DesktopPalette.Resolve(state.IsLight);
+        palette = DesktopPalette.Resolve(state.IsLight) with
+        {
+            Line = state.IsLight ? Color.FromArgb(204, 204, 204) : Color.FromArgb(69, 69, 69)
+        };
         Render();
     }
 
@@ -119,24 +124,32 @@ internal sealed class TrayPanel : Form
             int y = this.Px(15);
             caption.ForeColor = palette.Muted;
             caption.Text = W(Word.Active);
-            Place(caption, pad, y, inner, 20);
-            y += this.Px(20);
+            int switchWidth = this.Px(49), titleWidth = inner - switchWidth - this.Px(12);
+            Place(caption, pad, y, titleWidth, 18);
 
-            connection.Text = (state.Connected ? "●  " : "") + state.Connection;
-            connection.ForeColor = state.Connected ? palette.Signal : palette.Ink;
-            Place(connection, pad, y, inner, 33);
+            connection.Text = state.Connection;
+            Place(connection, pad, y + this.Px(18), titleWidth, 32);
             tips.SetToolTip(connection, state.Connection);
-            y += this.Px(41);
 
-            switchPair.Text = state.Target is { } targetName ? W(Word.Switch) + " " + targetName : W(Word.SwitchPair);
-            tips.SetToolTip(switchPair, state.Target is null ? W(Word.PickWifi) : switchPair.Text);
+            switchPair.AccessibleName = state.Target is { } targetName ? W(Word.Switch) + " " + targetName : W(Word.SwitchPair);
+            tips.SetToolTip(switchPair, state.Target is null ? W(Word.PickWifi) : switchPair.AccessibleName);
             switchPair.Enabled = state.Target is not null && !state.Busy;
-            Place(switchPair, pad, y, inner, 41);
-            y += this.Px(51);
+            Place(switchPair, width - pad - switchWidth, y + this.Px(3), switchWidth, 44);
+            y += this.Px(54);
+            PlaceDivider(statusDivider, pad, inner, ref y);
 
+            bool hasMore = state.Pair.Length == 2 && state.Saved.Length > state.Pair.Length;
+            all.Visible = hasMore;
+            int allWidth = this.Px(102);
+            if (hasMore)
+            {
+                all.Text = expanded ? W(Word.TrayPairShort) : W(Word.TrayAllShort) + " ›";
+                tips.SetToolTip(all, expanded ? W(Word.PairNetworks) : W(Word.AllSavedNetworks));
+                Place(all, width - pad - allWidth, y, allWidth, 28);
+            }
             section.Text = expanded ? W(Word.SavedNetworks) : W(Word.PairNetworks);
-            Place(section, pad, y, inner, 23);
-            y += this.Px(26);
+            Place(section, pad, y, hasMore ? inner - allWidth : inner, 28);
+            y += this.Px(32);
 
             for (int i = 0; i < profiles.Length; i++)
             {
@@ -148,12 +161,16 @@ internal sealed class TrayPanel : Form
                 string target = slice[i];
                 bool active = state.Connected && target == state.Connection;
                 row.Tag = target;
-                row.Text = active ? target + "  ·  " + W(Word.Connected) : target;
+                row.Text = target;
+                row.AccessibleName = target + " · " + W(active ? Word.Connected : Word.Disconnect);
+                row.Indicator = active
+                    ? (state.IsLight ? Color.FromArgb(24, 125, 69) : Color.FromArgb(130, 211, 162))
+                    : (state.IsLight ? Color.FromArgb(178, 51, 51) : Color.FromArgb(231, 116, 116));
                 row.Selected = active;
                 row.Enabled = !active && !state.Busy;
-                tips.SetToolTip(row, row.Text);
-                Place(row, pad, y, inner, 37);
-                y += this.Px(41);
+                tips.SetToolTip(row, row.AccessibleName);
+                Place(row, pad, y, inner, 34);
+                y += this.Px(39);
             }
 
             if (state.Saved.Length == 0)
@@ -198,22 +215,14 @@ internal sealed class TrayPanel : Form
                 y += this.Px(35);
             }
 
-            bool hasMore = state.Pair.Length == 2 && state.Saved.Length > state.Pair.Length;
-            all.Visible = hasMore;
-            if (hasMore)
-            {
-                all.Text = showAll ? W(Word.PairNetworks) : W(Word.AllSavedNetworks);
-                Place(all, pad, y, inner, 31);
-                y += this.Px(35);
-            }
-
-            open.Text = W(Word.OpenApp);
+            PlaceDivider(footerDivider, pad, inner, ref y);
+            open.Text = W(Word.OpenApp) + " ↗";
             exit.Text = W(Word.Exit);
             exit.Enabled = !state.Busy;
-            int exitWidth = this.Px(88), gap = this.Px(7);
-            Place(open, pad, y, inner - exitWidth - gap, 34);
-            Place(exit, width - pad - exitWidth, y, exitWidth, 34);
-            ClientSize = new Size(width, y + this.Px(48));
+            int exitWidth = this.Px(83);
+            Place(open, pad, y, this.Px(213), 31);
+            Place(exit, width - pad - exitWidth, y, exitWidth, 31);
+            ClientSize = new Size(width, y + this.Px(40));
             if (Visible)
                 Location = PlaceNear(Screen.FromPoint(anchor).WorkingArea, anchor, Size, this.Px(10));
         }
@@ -223,6 +232,13 @@ internal sealed class TrayPanel : Form
             positioning = false;
             Invalidate(true);
         }
+    }
+
+    private void PlaceDivider(Panel divider, int pad, int width, ref int y)
+    {
+        divider.BackColor = palette.Line;
+        Place(divider, pad, y + this.Px(2), width, 1);
+        y += this.Px(12);
     }
 
     private void Place(Control control, int x, int y, int width, int height) =>
@@ -297,9 +313,9 @@ internal sealed class TrayPanel : Form
         TextAlign = ContentAlignment.MiddleLeft
     };
 
-    private static DesktopButton Button(ButtonAppearance appearance = ButtonAppearance.Quiet) => new()
+    private static DesktopButton Button(ButtonAppearance appearance = ButtonAppearance.Outline, bool leftAligned = false) => new()
     {
         Appearance = appearance,
-        TextAlign = appearance == ButtonAppearance.Outline ? ContentAlignment.MiddleLeft : ContentAlignment.MiddleCenter
+        TextAlign = leftAligned ? ContentAlignment.MiddleLeft : ContentAlignment.MiddleCenter
     };
 }

@@ -15,6 +15,8 @@ internal sealed class AppSettings
     public Guid? AdapterBId { get; set; }
     public string? AdapterA { get; set; }
     public string? AdapterB { get; set; }
+    public Dictionary<Guid, string> AdapterWifiProfiles { get; set; } = [];
+    public Dictionary<Guid, string[]> KnownWifiProfiles { get; set; } = [];
     public Guid? WifiAdapterId { get; set; }
     public string? WifiA { get; set; }
     public string? WifiB { get; set; }
@@ -60,6 +62,8 @@ internal sealed class AppSettings
                         _ => "system"
                     };
                     found.Language ??= "English";
+                    found.AdapterWifiProfiles ??= [];
+                    found.KnownWifiProfiles ??= [];
                     if (path != FilePath)
                         found.ShowAdapters = found.AdapterA is not null && found.AdapterB is not null;
                     return found;

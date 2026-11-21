@@ -9,4 +9,8 @@ internal sealed record NetworkAdapterInfo(
     bool Connected,
     bool IsVirtual,
     bool IsBluetooth,
-    string? IPv4 = null);
+    string? IPv4 = null,
+    bool Preferred = false)
+{
+    public bool IsWifi => Type == "Wi-Fi";
+}

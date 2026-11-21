@@ -17,9 +17,7 @@ internal sealed class TrayIconFeedback : IDisposable
     public TrayIconFeedback(NotifyIcon notification)
     {
         this.notification = notification;
-        using var resource = typeof(TrayIconFeedback).Assembly.GetManifestResourceStream("NetworkAdapterSwitcher.TrayIcon")
-            ?? throw new InvalidOperationException("The notification icon is missing.");
-        standard = new Icon(resource, SystemInformation.SmallIconSize);
+        standard = DesktopDrawing.LoadCompactAppIcon(SystemInformation.SmallIconSize);
         progress = Enumerable.Range(0, 8).Select(index => FrameFor(standard.Size, index)).ToArray();
         success = Badge(standard.Size, true);
         failure = Badge(standard.Size, false);
@@ -73,7 +71,7 @@ internal sealed class TrayIconFeedback : IDisposable
     }, Color.White);
 
     private static Icon Badge(Size size, bool good) => good
-        ? DrawIcon(size, (g, p) => g.DrawLines(p, [new Point(6, 16), new Point(13, 23), new Point(26, 9)]), Color.FromArgb(126, 216, 170))
+        ? DrawIcon(size, (g, p) => g.DrawLines(p, [new Point(6, 16), new Point(13, 23), new Point(26, 9)]), Color.White)
         : DrawIcon(size, (g, p) =>
         {
             g.DrawLine(p, 8, 8, 24, 24);

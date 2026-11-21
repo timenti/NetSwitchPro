@@ -5,10 +5,16 @@ using System.Runtime.InteropServices;
 namespace NetworkAdapterSwitcher.Services;
 
 internal sealed record WifiAdapter(Guid Id, string Description, string[] Profiles, string? ActiveProfile, bool Connected);
-internal enum WifiSwitchResult { Connected, NotConfirmed, PreviousRestored, RestoreUnconfirmed }
-internal sealed record WifiSwitchOutcome(WifiSwitchResult Result, string? Diagnostic = null);
+internal enum WifiSwitchResult { Connected, NotConfirmed, PreviousRestored, RestoreUnconfirmed, ProfileUnavailable }
+internal sealed record WifiSwitchOutcome(WifiSwitchResult Result, string? Diagnostic = null, bool RetryWithoutEthernet = false);
 
-internal sealed class WifiService : IDisposable
+internal interface IWifiProfileService
+{
+    WifiAdapter? FindAdapter(Guid id);
+    Task<WifiSwitchOutcome> ConnectProfileAsync(Guid id, string requested);
+}
+
+internal sealed class WifiService : IWifiProfileService, IDisposable
 {
     private const uint Acm = 8;
     private const uint ConnectionComplete = 10, ConnectionAttemptFailed = 11, InterfaceRemoval = 14, Disconnected = 21;
@@ -40,7 +46,10 @@ internal sealed class WifiService : IDisposable
 
     private string[] GetProfiles(Guid id)
     {
-        Check(Native.WlanGetProfileList(handle, ref id, IntPtr.Zero, out var data));
+        uint result = Native.WlanGetProfileList(handle, ref id, IntPtr.Zero, out var data);
+        if (result is 5 or 1168 or 5023)
+            return [];
+        Check(result);
         try { return ReadList<ProfileInfo>(data).Select(info => info.Name).Distinct(StringComparer.Ordinal).ToArray(); }
         finally { Native.WlanFreeMemory(data); }
     }
@@ -69,12 +78,14 @@ internal sealed class WifiService : IDisposable
         return await ConnectSavedAsync(start, requested);
     }
 
+    public WifiAdapter? FindAdapter(Guid id) => GetAdapters().FirstOrDefault(item => item.Id == id);
+
     public Task<WifiSwitchOutcome> ConnectProfileAsync(Guid id, string requested)
     {
-        var adapter = GetAdapters().SingleOrDefault(item => item.Id == id);
+        var adapter = FindAdapter(id);
         return adapter is not null && adapter.Profiles.Contains(requested, StringComparer.Ordinal)
             ? ConnectSavedAsync(adapter, requested)
-            : Task.FromResult(new WifiSwitchOutcome(WifiSwitchResult.NotConfirmed));
+            : Task.FromResult(new WifiSwitchOutcome(WifiSwitchResult.ProfileUnavailable));
     }
 
     private async Task<WifiSwitchOutcome> ConnectSavedAsync(WifiAdapter start, string requested)
@@ -88,19 +99,19 @@ internal sealed class WifiService : IDisposable
             return new(WifiSwitchResult.Connected);
 
         if (!attempt.Accepted || string.IsNullOrEmpty(previous) || previous == requested || !start.Profiles.Contains(previous))
-            return new(WifiSwitchResult.NotConfirmed, attempt.Diagnostic);
+            return new(WifiSwitchResult.NotConfirmed, attempt.Diagnostic, attempt.Accepted || attempt.Error == 5023);
 
         var now = GetAdapters().SingleOrDefault(a => a.Id == id);
         if (now?.ActiveProfile == previous)
-            return new(WifiSwitchResult.PreviousRestored, attempt.Diagnostic);
+            return new(WifiSwitchResult.PreviousRestored, attempt.Diagnostic, RetryWithoutEthernet: true);
         if (now is null || (now.Connected && now.ActiveProfile != requested))
             return new(WifiSwitchResult.RestoreUnconfirmed, attempt.Diagnostic);
 
         var restored = await ConnectAsync(id, previous);
-        return new(restored.Joined ? WifiSwitchResult.PreviousRestored : WifiSwitchResult.RestoreUnconfirmed, attempt.Diagnostic);
+        return new(restored.Joined ? WifiSwitchResult.PreviousRestored : WifiSwitchResult.RestoreUnconfirmed, attempt.Diagnostic, RetryWithoutEthernet: restored.Joined);
     }
 
-    private async Task<(bool Accepted, bool Joined, string? Diagnostic)> ConnectAsync(Guid id, string profile)
+    private async Task<(bool Accepted, bool Joined, string? Diagnostic, uint Error)> ConnectAsync(Guid id, string profile)
     {
         var attempt = new Attempt(id, profile);
         Volatile.Write(ref pending, attempt);
@@ -109,20 +120,20 @@ internal sealed class WifiService : IDisposable
             var settings = new ConnectionParameters { Mode = 0, Profile = profile, BssType = 3 };
             var error = Native.WlanConnect(handle, ref id, ref settings, IntPtr.Zero);
             if (error != 0)
-                return (false, false, new Win32Exception((int)error).Message);
+                return (false, false, new Win32Exception((int)error).Message, error);
 
             for (int i = 0; i < 36; i++)
             {
                 if (attempt.Completed.Task.IsCompletedSuccessfully)
                 {
                     uint reason = await attempt.Completed.Task;
-                    return reason == 0 ? (true, true, null) : (true, false, Reason(reason));
+                    return reason == 0 ? (true, true, null, 0u) : (true, false, Reason(reason), 0u);
                 }
                 if (i % 3 == 0 && GetCurrent(id) == profile)
-                    return (true, true, null);
+                    return (true, true, null, 0);
                 await Task.Delay(500);
             }
-            return (true, false, Reason(Volatile.Read(ref attempt.LastFailure)));
+            return (true, false, Reason(Volatile.Read(ref attempt.LastFailure)), 0);
         }
         finally { Volatile.Write(ref pending, null); }
     }

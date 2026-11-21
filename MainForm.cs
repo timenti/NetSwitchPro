@@ -32,6 +32,9 @@ internal sealed class MainForm : Form
     private readonly DesktopButton elevate = MakeButton(ButtonAppearance.Outline, glyph: "\uE72E");
     private readonly DesktopButton action = MakeButton(ButtonAppearance.Primary, "");
     private readonly DesktopPicker wifiInterface = MakePicker();
+    private const string AutomaticWifiProfile = "auto";
+    private const string LoadWifiNetworks = "load";
+    private const string WifiProfilePrefix = "profile:";
     private readonly DesktopToggle showVirtual = new();
     private readonly DesktopToggle showBluetooth = new();
     private readonly PairCard first = new();
@@ -40,6 +43,7 @@ internal sealed class MainForm : Form
     private readonly TableLayoutPanel adapterAccess = Surface(2, 1);
     private readonly FlowLayoutPanel filters = new() { Dock = DockStyle.Fill, WrapContents = true, Margin = Padding.Empty };
     private readonly ToolTip tooltips = new();
+    private readonly Icon captionIcon = DesktopDrawing.LoadCompactAppIcon(SystemInformation.SmallIconSize);
     private readonly NotifyIcon notification = new() { Text = "NetSwitch Pro" };
     private readonly TrayPanel tray = new();
     private TrayIconFeedback? iconFeedback;
@@ -69,7 +73,7 @@ internal sealed class MainForm : Form
         ClientSize = new Size(656, 507);
         MinimumSize = new Size(607, 543);
         StartPosition = FormStartPosition.CenterScreen;
-        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+        Icon = captionIcon;
         BuildLayout();
         HandleCreated += (_, _) => SetTitleBar(this);
         UpdateLabels();
@@ -230,6 +234,7 @@ internal sealed class MainForm : Form
         feedback.Controls.Add(hint);
         feedback.Controls.Add(status);
         footer.Controls.Add(feedback, 0, 0);
+        action.Margin = new Padding(0, 6, 0, 6);
         footer.Controls.Add(action, 1, 0);
         root.Controls.Add(footer, 0, 6);
     }
@@ -317,7 +322,20 @@ internal sealed class MainForm : Form
         try
         {
             if (readWifi)
+            {
                 wireless = await Task.Run(() => wifi.GetAdapters());
+                bool changed = false;
+                foreach (var adapter in wireless.Where(item => item.Profiles.Length > 0))
+                {
+                    if (settings.KnownWifiProfiles.TryGetValue(adapter.Id, out var known) &&
+                        known.SequenceEqual(adapter.Profiles, StringComparer.Ordinal))
+                        continue;
+                    settings.KnownWifiProfiles[adapter.Id] = adapter.Profiles;
+                    changed = true;
+                }
+                if (changed)
+                    SaveSettings();
+            }
             else
                 wired = await Task.Run(adapters.GetAdapters);
         }
@@ -449,17 +467,96 @@ internal sealed class MainForm : Form
             Say("Выберите адаптер", "Choose an adapter");
         var (a, b) = VisiblePair();
         var choices = VisibleAdapters().Select(x => new DesktopChoice(
-            x.Id.ToString(), x.Name, AdapterDetail(x), x.Connected)).ToArray();
-        Fill(first.Picker, choices, a?.Id.ToString());
-        Fill(second.Picker, choices, b?.Id.ToString());
+            x.Id.ToString(), x.Name, AdapterDetail(x), x.Connected, OpensChoices: x.IsWifi)).ToArray();
+        first.Picker.Bind(choices, a?.Id.ToString(), a is null ? null : AdapterCaption(a));
+        second.Picker.Bind(choices, b?.Id.ToString(), b is null ? null : AdapterCaption(b));
         first.Detail.Text = AdapterDetail(a);
         second.Detail.Text = AdapterDetail(b);
         tooltips.SetToolTip(first.Detail, a?.Description ?? "");
         tooltips.SetToolTip(second.Detail, b?.Description ?? "");
-        var target = a is not null && b is not null && a.Id != b.Id ? AdapterSwitch.ChooseTarget(a, b).Name : null;
-        hint.Text = target is null ? W(Word.PickAdapters) : W(Word.AdapterHint);
-        SetAction(target, Say("Переключить адаптер", "Switch adapter"));
-        action.Enabled = administrator && target is not null;
+        var target = AdapterTarget(a, b);
+        string? selectedProfile = target?.IsWifi == true
+            ? settings.AdapterWifiProfiles.GetValueOrDefault(target.Id)
+            : null;
+        bool profileAvailable = target is null || selectedProfile is null ||
+            WifiProfilesFor(target).Contains(selectedProfile, StringComparer.Ordinal);
+        hint.Text = target is null ? W(Word.PickAdapters) :
+            target.IsWifi && !profileAvailable ? W(Word.ChooseAdapterWifiProfile) : "";
+        SetAction(selectedProfile ?? target?.Name, Say("Переключить адаптер", "Switch adapter"));
+        action.Enabled = administrator && target is not null && (!target.IsWifi || profileAvailable);
+    }
+
+    private static NetworkAdapterInfo? AdapterTarget(NetworkAdapterInfo? first, NetworkAdapterInfo? second) =>
+        first is not null && second is not null && first.Id != second.Id ? AdapterSwitch.ChooseTarget(first, second) : null;
+
+    private string AdapterCaption(NetworkAdapterInfo adapter) =>
+        adapter.IsWifi && settings.AdapterWifiProfiles.TryGetValue(adapter.Id, out var profile)
+            ? adapter.Name + " · " + profile
+            : adapter.Name;
+
+    private string[] WifiProfilesFor(NetworkAdapterInfo adapter)
+    {
+        var observed = wireless.FirstOrDefault(item => item.Id == adapter.Id);
+        return observed is not null && (adapter.Enabled || observed.Profiles.Length > 0)
+            ? observed.Profiles
+            : settings.KnownWifiProfiles.GetValueOrDefault(adapter.Id) ?? [];
+    }
+
+    private void OpenAdapterWifiChoices(PairCard card, NetworkAdapterInfo adapter)
+    {
+        string[] profiles = WifiProfilesFor(adapter);
+        var options = new List<DesktopChoice>
+        {
+            new(AutomaticWifiProfile, adapter.Name, W(Word.WifiAutomatic))
+        };
+        options.AddRange(profiles.Select(name => new DesktopChoice(WifiProfilePrefix + name, name)));
+        if (administrator && !adapter.Enabled && profiles.Length == 0)
+            options.Add(new DesktopChoice(LoadWifiNetworks, W(Word.LoadWifiProfiles)));
+
+        string key = settings.AdapterWifiProfiles.TryGetValue(adapter.Id, out var selected)
+            ? WifiProfilePrefix + selected
+            : AutomaticWifiProfile;
+        card.Picker.OpenChoices(options, key, option =>
+        {
+            if (option == LoadWifiNetworks)
+            {
+                card.Picker.BeginInvoke(async () => await LoadAdapterWifiProfilesAsync(card, adapter.Id));
+                return;
+            }
+            CommitAdapter(card, adapter, option == AutomaticWifiProfile ? null : option[WifiProfilePrefix.Length..]);
+        });
+    }
+
+    private async Task LoadAdapterWifiProfilesAsync(PairCard card, Guid adapterId)
+    {
+        if (!administrator || busy || refreshing || wifiMode)
+            return;
+
+        SetBusy(true);
+        try
+        {
+            await Task.Run(() => adapters.SetEnabled(adapterId, true));
+            for (int attempt = 0; attempt < 10; attempt++)
+            {
+                await ReadAsync(true);
+                if (wireless.Any(item => item.Id == adapterId && item.Profiles.Length > 0))
+                    break;
+                await Task.Delay(350);
+            }
+        }
+        catch (Exception ex)
+        {
+            WriteJournal(Say("Не удалось включить адаптер Wi-Fi.", "Could not enable the Wi-Fi adapter."), ex.Message);
+        }
+        finally
+        {
+            await ReadAsync(false);
+            lastRead = Environment.TickCount64;
+            SetBusy(false);
+        }
+
+        if (VisibleAdapters().FirstOrDefault(item => item.Id == adapterId) is { } adapter)
+            OpenAdapterWifiChoices(card, adapter);
     }
 
     private void SetSignal(bool active)
@@ -469,7 +566,8 @@ internal sealed class MainForm : Form
     }
 
     private string AdapterDetail(NetworkAdapterInfo? item) =>
-        item is null ? "" : (item.Connected ? W(Word.Connected) : item.Enabled ? W(Word.Enabled) : W(Word.Disabled))
+        item is null ? "" : (item.Connected ? W(Word.Connected) : item.Enabled ?
+            W(Word.EnabledWithoutLink) : W(Word.Disabled))
             + "   ·   " + item.Type + (item.IPv4 is { } address ? "   ·   " + address : "");
 
     private void SetAction(string? target, string placeholder)
@@ -494,6 +592,10 @@ internal sealed class MainForm : Form
         var selected = ActiveInterface();
         string? firstSelection = Selected(first.Picker), secondSelection = Selected(second.Picker);
         var (a, b) = VisiblePair();
+        var adapterTarget = AdapterTarget(a, b);
+        var wifiProfile = adapterTarget?.IsWifi == true
+            ? settings.AdapterWifiProfiles.GetValueOrDefault(adapterTarget.Id)
+            : null;
         SetBusy(true);
         try
         {
@@ -502,13 +604,17 @@ internal sealed class MainForm : Form
             {
                 await RunWifiAsync(() => wifi.SwitchAsync(selected.Id, firstSelection, secondSelection, target), target);
             }
-            else if (!wifiMode && administrator && a is not null && b is not null && a.Id != b.Id)
+            else if (!wifiMode && administrator && a is not null && b is not null && adapterTarget is not null)
             {
-                var outcome = await Task.Run(() => new AdapterSwitch(adapters).ApplyAsync(a.Id, b.Id));
+                var outcome = await Task.Run(() => new AdapterSwitch(adapters, wifi: wifi)
+                    .ApplyAsync(a.Id, b.Id, adapterTarget.Id, wifiProfile));
                 var message = outcome.Result switch
                 {
                     AdapterSwitchResult.Changed => Say("Адаптер переключён.", "Adapter switched."),
                     AdapterSwitchResult.TargetNotReady => Say("Второй адаптер не готов к переключению.", "The other adapter was not ready."),
+                    AdapterSwitchResult.WifiProfileRequired => Say("Выберите сохранённую сеть для Wi-Fi-адаптера.", "Choose a saved network for the Wi-Fi adapter."),
+                    AdapterSwitchResult.WifiProfileUnavailable => Say("Выбранный профиль Wi-Fi недоступен в Windows.", "The selected Wi-Fi profile is unavailable in Windows."),
+                    AdapterSwitchResult.WifiNotConnected => Say("Wi-Fi не подключился. Исходное состояние восстановлено.", "Wi-Fi could not connect. The original adapter state was restored."),
                     AdapterSwitchResult.FailedRestored => Say("Переключение не удалось. Исходное состояние восстановлено.", "Switch failed. The original state was restored."),
                     _ => Say("Не удалось подтвердить восстановление адаптеров.", "Could not confirm that adapter state was restored.")
                 };
@@ -536,6 +642,7 @@ internal sealed class MainForm : Form
             {
                 WifiSwitchResult.Connected => Say("Подключено к ", "Connected to ") + target,
                 WifiSwitchResult.PreviousRestored => Say("Не удалось переключиться. Прежняя сеть восстановлена.", "Switch failed. The previous network was restored."),
+                WifiSwitchResult.ProfileUnavailable => Say("Выбранный профиль Wi-Fi недоступен в Windows.", "The selected Wi-Fi profile is unavailable in Windows."),
                 WifiSwitchResult.RestoreUnconfirmed => Say("Не удалось подтвердить восстановление прежней сети.", "Could not confirm restoration of the previous network."),
                 _ => Say("Windows не подтвердила подключение к ", "Windows did not confirm connection to ") + target
             };
@@ -670,7 +777,8 @@ internal sealed class MainForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing && !IsDisposed)
+        bool disposeResources = disposing && !IsDisposed;
+        if (disposeResources)
         {
             iconFeedback?.Dispose();
             notification.Dispose();
@@ -679,6 +787,8 @@ internal sealed class MainForm : Form
             tooltips.Dispose();
         }
         base.Dispose(disposing);
+        if (disposeResources)
+            captionIcon.Dispose();
     }
 
     private void ChangeFilters()
@@ -699,19 +809,41 @@ internal sealed class MainForm : Form
                 settings.WifiA = key;
             else
                 settings.WifiB = key;
+            SaveAndRender();
+            return;
         }
-        else if (Guid.TryParse(key, out var id))
+
+        if (!Guid.TryParse(key, out var id) || VisibleAdapters().FirstOrDefault(item => item.Id == id) is not { } adapter)
+            return;
+        if (!adapter.IsWifi)
         {
-            if (card == first)
-            {
-                settings.AdapterAId = id;
-                settings.AdapterA = null;
-            }
+            CommitAdapter(card, adapter, null);
+            return;
+        }
+
+        Render();
+        card.Picker.BeginInvoke(() => OpenAdapterWifiChoices(card, adapter));
+    }
+
+    private void CommitAdapter(PairCard card, NetworkAdapterInfo adapter, string? wifiProfile)
+    {
+        if (card == first)
+        {
+            settings.AdapterAId = adapter.Id;
+            settings.AdapterA = null;
+        }
+        else
+        {
+            settings.AdapterBId = adapter.Id;
+            settings.AdapterB = null;
+        }
+
+        if (adapter.IsWifi)
+        {
+            if (wifiProfile is null)
+                settings.AdapterWifiProfiles.Remove(adapter.Id);
             else
-            {
-                settings.AdapterBId = id;
-                settings.AdapterB = null;
-            }
+                settings.AdapterWifiProfiles[adapter.Id] = wifiProfile;
         }
         SaveAndRender();
     }
@@ -833,7 +965,7 @@ internal sealed class MainForm : Form
         languages.Margin = theme.Margin;
         languages.AccessibleName = W(Word.Language);
         Fill(languages, UiWords.Languages.Select(x => new DesktopChoice(x.Key, x.Label)), settings.Language);
-        var apply = MakeButton(ButtonAppearance.Confirm);
+        var apply = MakeButton(ButtonAppearance.Primary);
         apply.Text = Say("Сохранить", "Save");
         apply.DialogResult = DialogResult.OK;
         layout.Controls.Add(new Label { Text = W(Word.Theme), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
@@ -964,8 +1096,16 @@ internal sealed class MainForm : Form
 
     private void SetTitleBar(Form form)
     {
-        int dark = lightTheme ? 0 : 1;
-        _ = DwmSetWindowAttribute(form.Handle, 20, ref dark, sizeof(int));
+        const int UseImmersiveDarkMode = 20, CaptionColor = 35, CaptionTextColor = 36;
+        const int SystemDefaultColor = -1;
+        bool highContrast = SystemInformation.HighContrast;
+        var palette = DesktopPalette.Resolve(lightTheme);
+        int dark = !lightTheme && !highContrast ? 1 : 0;
+        int background = highContrast ? SystemDefaultColor : ColorTranslator.ToWin32(palette.Window);
+        int text = highContrast ? SystemDefaultColor : ColorTranslator.ToWin32(palette.Ink);
+        _ = DwmSetWindowAttribute(form.Handle, UseImmersiveDarkMode, ref dark, sizeof(int));
+        _ = DwmSetWindowAttribute(form.Handle, CaptionColor, ref background, sizeof(int));
+        _ = DwmSetWindowAttribute(form.Handle, CaptionTextColor, ref text, sizeof(int));
     }
 
     private static bool IsAdministrator()

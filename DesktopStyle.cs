@@ -9,13 +9,11 @@ internal sealed record DesktopPalette(
 {
     private static readonly DesktopPalette Dark = new(
         Gray(18), Gray(25), Gray(32), Gray(42), Gray(53), Gray(246), Gray(176),
-        Color.FromArgb(126, 216, 170), Color.FromArgb(152, 229, 188), Gray(18),
-        Color.FromArgb(126, 216, 170));
+        Color.White, Gray(232), Gray(18), Gray(224));
 
     private static readonly DesktopPalette Light = new(
         Gray(246), Color.White, Gray(239), Gray(230), Gray(213), Gray(22), Gray(94),
-        Color.FromArgb(126, 216, 170), Color.FromArgb(152, 229, 188), Gray(18),
-        Color.FromArgb(25, 111, 68));
+        Color.White, Gray(234), Gray(22), Gray(63));
 
     public static DesktopPalette Resolve(bool light) => light ? Light : Dark;
     private static Color Gray(int value) => Color.FromArgb(value, value, value);
@@ -23,6 +21,13 @@ internal sealed record DesktopPalette(
 
 internal static class DesktopDrawing
 {
+    public static Icon LoadCompactAppIcon(Size size)
+    {
+        using var resource = typeof(DesktopDrawing).Assembly.GetManifestResourceStream("NetworkAdapterSwitcher.TrayIcon")
+            ?? throw new InvalidOperationException("The compact app icon is missing.");
+        return new Icon(resource, size);
+    }
+
     public static int Px(this Control control, int value) => (value * control.DeviceDpi + 48) / 96;
 
     public static GraphicsPath Rounded(Rectangle bounds, int radius)
@@ -76,7 +81,7 @@ internal sealed class SurfaceGrid : LayoutGrid
     }
 }
 
-internal enum ButtonAppearance { Quiet, Outline, Segment, Field, Primary, Confirm }
+internal enum ButtonAppearance { Quiet, Outline, Segment, Field, Primary }
 
 internal class DesktopButton : Button
 {
@@ -89,6 +94,10 @@ internal class DesktopButton : Button
     internal bool Selected { get; set; }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal string? Glyph { get; init; }
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal float GlyphSize { get; init; } = 12;
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal Color? Indicator { get; set; }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal DesktopPalette Palette { get; set; } = DesktopPalette.Resolve(false);
 
@@ -150,17 +159,16 @@ internal class DesktopButton : Button
         else
             g.Clear(Parent?.BackColor ?? Palette.Window);
         bool over = Enabled && (hovered || pressed);
-        bool invert = Enabled && (Appearance is ButtonAppearance.Primary or ButtonAppearance.Confirm);
+        bool primary = Appearance == ButtonAppearance.Primary;
         bool field = Appearance == ButtonAppearance.Field;
         Color background = Appearance switch
         {
             ButtonAppearance.Primary => Enabled ? (over ? Palette.AccentHover : Palette.Accent) : Palette.Field,
-            ButtonAppearance.Confirm => Enabled ? (over ? Color.FromArgb(225, 225, 225) : Color.White) : Palette.Field,
             ButtonAppearance.Field => over ? Palette.Hover : Palette.Field,
             ButtonAppearance.Segment => Selected || over ? Palette.Hover : Parent?.BackColor ?? Palette.Surface,
             _ => over ? Palette.Hover : Palette.Surface
         };
-        Color? border = field || Selected || Appearance is ButtonAppearance.Outline or ButtonAppearance.Confirm ? Palette.Line : null;
+        Color? border = field || Selected || primary || Appearance == ButtonAppearance.Outline ? Palette.Line : null;
         if (Focused && ShowFocusCues)
             border = Palette.Signal;
         var bounds = new Rectangle(1, 1, Width - 3, Height - 3);
@@ -173,10 +181,19 @@ internal class DesktopButton : Button
             g.DrawPath(focus, outline);
         }
 
-        var foreground = invert ? Palette.AccentInk :
+        var foreground = Enabled && primary ? Palette.AccentInk :
             !Enabled || (field && !Selected) || (Appearance == ButtonAppearance.Segment && !Selected)
                 ? Palette.Muted : Palette.Ink;
         var textArea = Rectangle.Inflate(bounds, -this.Px(12), 0);
+        if (Indicator is { } indicator)
+        {
+            int dot = this.Px(7);
+            DesktopDrawing.Shape(g, new Rectangle(textArea.Left, (Height - dot) / 2, dot, dot), dot, indicator);
+            int inset = this.Px(16);
+            textArea.X += inset;
+            textArea.Width -= inset;
+        }
+
         var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding;
         if (field)
         {
@@ -190,7 +207,7 @@ internal class DesktopButton : Button
 
         if (Glyph is { } glyph)
         {
-            using var iconFont = new Font("Segoe MDL2 Assets", field ? 11 : 12, GraphicsUnit.Point);
+            using var iconFont = new Font("Segoe MDL2 Assets", field ? 11 : GlyphSize, GraphicsUnit.Point);
             if (Text.Length == 0)
             {
                 TextRenderer.DrawText(g, glyph, iconFont, bounds, foreground, flags | TextFormatFlags.HorizontalCenter);
@@ -214,7 +231,7 @@ internal class DesktopButton : Button
     }
 }
 
-internal sealed record DesktopChoice(string Key, string Caption, string? Detail = null, bool Active = false);
+internal sealed record DesktopChoice(string Key, string Caption, string? Detail = null, bool Active = false, bool OpensChoices = false);
 
 internal sealed class DesktopPicker : DesktopButton
 {
@@ -233,10 +250,12 @@ internal sealed class DesktopPicker : DesktopButton
         AccessibleRole = AccessibleRole.PushButton;
     }
 
-    public void Bind(IEnumerable<DesktopChoice> choices, string? key)
+    public void Bind(IEnumerable<DesktopChoice> choices, string? key, string? selectedCaption = null)
     {
         options = choices.ToArray();
         SelectKey(key);
+        if (selectedKey is not null && selectedCaption is not null)
+            Text = AccessibleDescription = selectedCaption;
     }
 
     private void SelectKey(string? key)
@@ -252,7 +271,16 @@ internal sealed class DesktopPicker : DesktopButton
     protected override void OnClick(EventArgs e)
     {
         base.OnClick(e);
-        if (options.Length == 0 || menu.Visible)
+        OpenChoices(options, selectedKey, key =>
+        {
+            SelectKey(key);
+            SelectionChangeCommitted?.Invoke(this, EventArgs.Empty);
+        });
+    }
+
+    internal void OpenChoices(IReadOnlyList<DesktopChoice> choices, string? selection, Action<string> commit)
+    {
+        if (!Enabled || choices.Count == 0 || menu.Visible)
             return;
 
         menu.Font = Font;
@@ -264,13 +292,13 @@ internal sealed class DesktopPicker : DesktopButton
         while (menu.Items.Count > 0)
             menu.Items[0].Dispose();
 
-        foreach (var choice in options)
+        foreach (var choice in choices)
         {
-            var item = new PickerItem(choice, Palette, desiredWidth - menu.Padding.Horizontal, DeviceDpi, choice.Key == selectedKey);
+            var item = new PickerItem(choice, Palette, desiredWidth - menu.Padding.Horizontal, DeviceDpi, choice.Key == selection);
             item.Click += (_, _) =>
             {
-                SelectKey(choice.Key);
-                SelectionChangeCommitted?.Invoke(this, EventArgs.Empty);
+                menu.Close(ToolStripDropDownCloseReason.ItemClicked);
+                commit(choice.Key);
             };
             menu.Items.Add(item);
         }
@@ -337,13 +365,16 @@ internal sealed class DesktopPicker : DesktopButton
             else
                 TextRenderer.DrawText(g, choice.Caption, Font, new Rectangle(Px(12), 0, labelWidth, Height), palette.Ink, flags);
 
-            if (!Checked)
+            if (!Checked && !choice.OpensChoices)
                 return;
             var previous = g.SmoothingMode;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             using var pen = new Pen(palette.Signal, Math.Max(1, Px(2))) { StartCap = LineCap.Round, EndCap = LineCap.Round };
             int x = Width - Px(18), y = Height / 2;
-            g.DrawLines(pen, [new Point(x - Px(4), y), new Point(x - Px(1), y + Px(3)), new Point(x + Px(5), y - Px(4))]);
+            if (choice.OpensChoices)
+                g.DrawLines(pen, [new Point(x - Px(2), y - Px(4)), new Point(x + Px(2), y), new Point(x - Px(2), y + Px(4))]);
+            else
+                g.DrawLines(pen, [new Point(x - Px(4), y), new Point(x - Px(1), y + Px(3)), new Point(x + Px(5), y - Px(4))]);
             g.SmoothingMode = previous;
         }
 
@@ -439,7 +470,7 @@ internal sealed class DesktopToggle : CheckBox
             int knob = this.Px(13), gap = this.Px(3);
             var marker = new Rectangle(Checked ? track.Right - knob - gap : track.X + gap,
                 track.Y + (height - knob) / 2, knob, knob);
-            DesktopDrawing.Shape(g, marker, knob / 2, Checked ? Palette.AccentInk : Palette.Muted);
+            DesktopDrawing.Shape(g, marker, knob / 2, Checked && Enabled ? Palette.AccentInk : Palette.Muted);
             text = new Rectangle(this.Px(12), 0, Math.Max(1, track.Left - this.Px(23)), Height);
         }
         else
