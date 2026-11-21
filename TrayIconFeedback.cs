@@ -7,17 +7,23 @@ internal sealed class TrayIconFeedback : IDisposable
 {
     private readonly NotifyIcon notification;
     private readonly Icon standard;
-    private readonly Icon[] progress = Enumerable.Range(0, 8).Select(FrameFor).ToArray();
-    private readonly Icon success = Badge(true);
-    private readonly Icon failure = Badge(false);
+    private readonly Icon[] progress;
+    private readonly Icon success;
+    private readonly Icon failure;
     private readonly System.Windows.Forms.Timer timer = new();
     private bool waiting;
     private int frame;
 
-    public TrayIconFeedback(NotifyIcon notification, Icon standard)
+    public TrayIconFeedback(NotifyIcon notification)
     {
         this.notification = notification;
-        this.standard = standard;
+        using var resource = typeof(TrayIconFeedback).Assembly.GetManifestResourceStream("NetworkAdapterSwitcher.TrayIcon")
+            ?? throw new InvalidOperationException("The notification icon is missing.");
+        standard = new Icon(resource, SystemInformation.SmallIconSize);
+        progress = Enumerable.Range(0, 8).Select(index => FrameFor(standard.Size, index)).ToArray();
+        success = Badge(standard.Size, true);
+        failure = Badge(standard.Size, false);
+        notification.Icon = standard;
         timer.Tick += (_, _) =>
         {
             if (waiting)
@@ -58,29 +64,30 @@ internal sealed class TrayIconFeedback : IDisposable
     private static string ShortText(string status) =>
         status.Length <= 120 ? status : status[..119] + "…";
 
-    private static Icon FrameFor(int frame) => DrawIcon((g, pen) =>
+    private static Icon FrameFor(Size size, int frame) => DrawIcon(size, (g, pen) =>
     {
         g.TranslateTransform(16, 16);
         g.RotateTransform(frame * 45);
-        g.DrawArc(pen, -8, -8, 16, 16, 36, 270);
-        g.DrawLines(pen, [new PointF(1.5f, -6), new PointF(5, -7), new PointF(5.5f, -11)]);
+        g.DrawArc(pen, -10, -10, 20, 20, 36, 270);
+        g.DrawLines(pen, [new PointF(2, -7), new PointF(6, -8), new PointF(6.5f, -13)]);
     }, Color.White);
 
-    private static Icon Badge(bool good) => good
-        ? DrawIcon((g, p) => g.DrawLines(p, [new Point(8, 16), new Point(14, 22), new Point(24, 10)]), Color.FromArgb(126, 216, 170))
-        : DrawIcon((g, p) =>
+    private static Icon Badge(Size size, bool good) => good
+        ? DrawIcon(size, (g, p) => g.DrawLines(p, [new Point(6, 16), new Point(13, 23), new Point(26, 9)]), Color.FromArgb(126, 216, 170))
+        : DrawIcon(size, (g, p) =>
         {
-            g.DrawLine(p, 10, 10, 22, 22);
-            g.DrawLine(p, 22, 10, 10, 22);
+            g.DrawLine(p, 8, 8, 24, 24);
+            g.DrawLine(p, 24, 8, 8, 24);
         }, Color.FromArgb(255, 123, 123));
 
-    private static Icon DrawIcon(Action<Graphics, Pen> paint, Color ink)
+    private static Icon DrawIcon(Size size, Action<Graphics, Pen> paint, Color ink)
     {
-        using var bitmap = new Bitmap(32, 32, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using var bitmap = new Bitmap(size.Width, size.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
         using (var graphics = Graphics.FromImage(bitmap))
-        using (var pen = new Pen(ink, 3) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+        using (var pen = new Pen(ink, 3.6f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
         {
-            DesktopDrawing.Shape(graphics, new Rectangle(1, 1, 29, 29), 7, Color.FromArgb(24, 24, 24), Color.FromArgb(68, 68, 68));
+            graphics.ScaleTransform(size.Width / 32f, size.Height / 32f);
+            DesktopDrawing.Shape(graphics, new Rectangle(0, 0, 31, 31), 5, Color.FromArgb(24, 24, 24), Color.FromArgb(68, 68, 68));
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
             paint(graphics, pen);
         }
@@ -92,7 +99,8 @@ internal sealed class TrayIconFeedback : IDisposable
     public void Dispose()
     {
         timer.Dispose();
-        notification.Icon = standard;
+        notification.Icon = null;
+        standard.Dispose();
         foreach (var icon in progress)
             icon.Dispose();
         success.Dispose();

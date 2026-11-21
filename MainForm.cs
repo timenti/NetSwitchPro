@@ -132,12 +132,8 @@ internal sealed class MainForm : Form
         if (hasShown)
             return;
         hasShown = true;
-        if (Icon is { } standard)
-        {
-            notification.Icon = standard;
-            iconFeedback = new TrayIconFeedback(notification, standard);
-            notification.Visible = true;
-        }
+        iconFeedback = new TrayIconFeedback(notification);
+        notification.Visible = true;
     }
 
     private void BuildLayout()

@@ -8,9 +8,9 @@
 <p align="center">Выберите два сохранённых подключения с нужными маршрутами. NetSwitch Pro покажет, какое активно и куда подключит следующее нажатие.</p>
 
 <p align="center">
-  <a href="https://github.com/timenti/NetSwitchPro/releases/download/v2.0.4/NetSwitchPro-2.0.4.exe"><strong>Скачать NetSwitch Pro 2.0.4 для Windows</strong></a>
+  <a href="https://github.com/timenti/NetSwitchPro/releases/download/v2.0.5/NetSwitchPro-2.0.5.exe"><strong>Скачать NetSwitch Pro 2.0.5 для Windows</strong></a>
   ·
-  <a href="https://github.com/timenti/NetSwitchPro/releases/tag/v2.0.4">Что нового</a>
+  <a href="https://github.com/timenti/NetSwitchPro/releases/tag/v2.0.5">Что нового</a>
 </p>
 
 <p align="center">
@@ -69,7 +69,7 @@
 
 ## Запуск и частые вопросы
 
-**Как установить?** Скачайте файл `NetSwitchPro-2.0.4.exe` и запустите его. Это переносимая сборка для Windows x64 со встроенной средой выполнения.
+**Как установить?** Скачайте файл `NetSwitchPro-2.0.5.exe` и запустите его. Это переносимая сборка для Windows x64 со встроенной средой выполнения.
 
 **Почему сети нет в списке?** Программа показывает профили, сохранённые Windows для выбранного адаптера. Подключитесь к нужной сети через Windows и нажмите **Обновить** в NetSwitch Pro.
 

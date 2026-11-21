@@ -10,7 +10,7 @@
     <AssemblyName>NetworkAdapterSwitcher</AssemblyName>
     <RootNamespace>NetworkAdapterSwitcher</RootNamespace>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
-    <Version>2.0.4</Version>
+    <Version>2.0.5</Version>
     <Product>NetSwitch Pro</Product>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <PublishSingleFile>true</PublishSingleFile>
@@ -22,5 +22,6 @@
   <ItemGroup>
     <PackageReference Include="System.Management" Version="10.0.0" />
     <EmbeddedResource Include="Assets\app.ico" LogicalName="NetworkAdapterSwitcher.BrandIcon" />
+    <EmbeddedResource Include="Assets\tray.ico" LogicalName="NetworkAdapterSwitcher.TrayIcon" />
   </ItemGroup>
 </Project>
