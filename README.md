@@ -8,16 +8,16 @@
 <p align="center">Выберите две Wi‑Fi-сети, два адаптера или Ethernet и конкретную Wi‑Fi-сеть. Переключайтесь одной кнопкой в окне или одним кликом по значку в трее.</p>
 
 <p align="center">
-  <a href="https://github.com/timenti/NetSwitchPro/releases/download/v2.1.1/NetSwitchPro-2.1.1.exe"><strong>Скачать NetSwitch Pro 2.1.1 для Windows</strong></a>
+  <a href="https://github.com/timenti/NetSwitchPro/releases/download/v2.1.2/NetSwitchPro-2.1.2.exe"><strong>Скачать NetSwitch Pro 2.1.2 для Windows</strong></a>
   ·
-  <a href="https://github.com/timenti/NetSwitchPro/releases/tag/v2.1.1">Что нового</a>
+  <a href="https://github.com/timenti/NetSwitchPro/releases/tag/v2.1.2">Что нового</a>
 </p>
 
 <p align="center">
   <img src="docs/images/wifi-demo.gif" width="820" alt="NetSwitch Pro. Настройка двух Wi-Fi-профилей, переключение между ними и настройка пары Ethernet и Wi-Fi.">
 </p>
 
-[Смотреть демонстрацию в MP4](https://github.com/timenti/NetSwitchPro/releases/download/v2.1.1/NetSwitchPro-demo.mp4) · [Снимок главного окна](docs/images/wifi.png)
+[Смотреть демонстрацию в MP4](https://github.com/timenti/NetSwitchPro/releases/download/v2.1.2/NetSwitchPro-demo.mp4) · [Снимок главного окна](docs/images/wifi.png)
 
 ## Зачем я сделал NetSwitch Pro
 
@@ -72,7 +72,7 @@
 
 ## Запуск и частые вопросы
 
-**Как запустить?** Скачайте `NetSwitchPro-2.1.1.exe` и откройте его. Установщик для Windows x64 добавит NetSwitch Pro в меню «Пуск». После перехода с переносимой версии открывайте NetSwitch Pro из меню «Пуск».
+**Как запустить?** Скачайте `NetSwitchPro-2.1.2.exe` и откройте его. Установщик для Windows x64 добавит NetSwitch Pro в меню «Пуск». После перехода с переносимой версии открывайте NetSwitch Pro из меню «Пуск».
 
 **Почему сети нет в списке?** Подключитесь к ней через Windows, затем нажмите **Обновить** в NetSwitch Pro. Каждый беспроводной адаптер показывает свои сохранённые профили.
 

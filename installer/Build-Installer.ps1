@@ -15,8 +15,13 @@ $exe = Get-Item -LiteralPath (Join-Path $build 'NetworkAdapterSwitcher.exe')
 if ($exe.VersionInfo.ProductName -ne 'NetSwitch Pro' -or $exe.VersionInfo.FileVersion -notmatch '^\d+\.\d+\.\d+\.0$') {
     throw 'The published executable has unexpected product metadata.'
 }
-$version = ([version]$exe.VersionInfo.FileVersion).ToString(3)
-& $Compiler "/DAppVersion=$version" "/DPayload=$($exe.FullName)" "/O$outputPath" (Join-Path $PSScriptRoot 'NetSwitchPro.iss')
+$fileVersion = [version]$exe.VersionInfo.FileVersion
+if ($fileVersion.Minor -gt 9 -or $fileVersion.Build -gt 9) {
+    throw 'Minor and patch must be single digits. Carry to the next component after 9.'
+}
+$version = $fileVersion.ToString(3)
+$display = $version -replace '(\.0){1,2}$', ''
+& $Compiler "/DAppVersion=$version" "/DDisplayVersion=$display" "/DPayload=$($exe.FullName)" "/O$outputPath" (Join-Path $PSScriptRoot 'NetSwitchPro.iss')
 if ($LASTEXITCODE -ne 0) { throw 'NetSwitch Pro installer build failed.' }
 $asset = "NetSwitchPro-$version.exe"
 $hash = (Get-FileHash -LiteralPath (Join-Path $outputPath $asset) -Algorithm SHA256).Hash.ToLowerInvariant()

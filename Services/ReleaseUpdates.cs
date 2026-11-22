@@ -1,6 +1,8 @@
 using System.Net.Http;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace NetworkAdapterSwitcher.Services;
 
@@ -10,6 +12,7 @@ internal static class ReleaseUpdates
 {
     internal const string ReleasesPage = "https://github.com/timenti/NetSwitchPro/releases/latest";
     private const string Api = "https://api.github.com/repos/timenti/NetSwitchPro/releases/latest";
+    private static readonly Regex TagFormat = new(@"\Av(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){0,2}\z", RegexOptions.CultureInvariant);
 
     private static readonly HttpClient Client = new()
     {
@@ -28,21 +31,28 @@ internal static class ReleaseUpdates
         return ReadRelease(await response.Content.ReadAsStringAsync(cancellation).ConfigureAwait(false), current);
     }
 
+    internal static string DisplayVersion(Version version) =>
+        version.Build > 0 ? version.ToString(3) :
+        version.Minor > 0 ? version.ToString(2) :
+        version.Major.ToString(CultureInfo.InvariantCulture);
+
     internal static AvailableUpdate? ReadRelease(string json, Version current)
     {
         var release = JsonSerializer.Deserialize<Release>(json) ?? throw new InvalidDataException("GitHub returned no release.");
         if (release.Draft || release.Prerelease)
             return null;
-        if (release.Tag is not { Length: > 1 } tag || tag[0] != 'v' ||
-            !Version.TryParse(tag[1..], out var parsed) || parsed.Build < 0 || parsed.Revision != -1 ||
-            tag != "v" + parsed.ToString(3))
+        if (release.Tag is not { } tag || !TagFormat.IsMatch(tag))
             throw new InvalidDataException("Unexpected release version from GitHub.");
 
-        var version = new Version(parsed.Major, parsed.Minor, parsed.Build, 0);
+        string numericTag = tag[1..];
+        if (!Version.TryParse(numericTag.Contains('.') ? numericTag : numericTag + ".0", out var parsed))
+            throw new InvalidDataException("Unexpected release version from GitHub.");
+
+        var version = new Version(parsed.Major, parsed.Minor, Math.Max(0, parsed.Build), 0);
         if (version <= current)
             return null;
 
-        string name = $"NetSwitchPro-{parsed.ToString(3)}.exe";
+        string name = $"NetSwitchPro-{version.ToString(3)}.exe";
         if (release.Assets?.Any(asset => asset is { Size: > 0 } && asset.Name == name) != true)
             throw new InvalidDataException("The GitHub release has no NetSwitch Pro installer.");
         return new(version, new Uri($"https://github.com/timenti/NetSwitchPro/releases/download/{tag}/{name}"));

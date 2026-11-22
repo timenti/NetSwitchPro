@@ -1006,7 +1006,7 @@ internal sealed class MainForm : Form
         }
         void RefreshWords()
         {
-            versionLabel.Text = Say("Версия ", "Version ") + version.ToString(3);
+            versionLabel.Text = Say("Версия ", "Version ") + ReleaseUpdates.DisplayVersion(version);
             note.Text = status();
             check.Text = checking ? Say("Проверяем…", "Checking…") :
                 available is null ? Say("Проверить обновления", "Check for updates") : Say("Обновить", "Update");
@@ -1053,7 +1053,7 @@ internal sealed class MainForm : Form
                     return;
                 }
 
-                var next = available.Version.ToString(3);
+                var next = ReleaseUpdates.DisplayVersion(available.Version);
                 ShowStatus(() => Say($"Доступна версия {next}.", $"Version {next} is available."));
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
