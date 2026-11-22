@@ -689,8 +689,6 @@ internal sealed class MainForm : Form
         Activate();
     }
 
-    internal void ReportStartupError(Exception error) => WriteJournal(W(Word.StartupFailed), error.Message);
-
     internal void RequestUpgradeExit()
     {
         upgradeExitRequested = true;
@@ -992,9 +990,8 @@ internal sealed class MainForm : Form
         dialog.FormClosed += (_, _) => lifetime.Cancel();
         dialog.Disposed += (_, _) => lifetime.Dispose();
         var token = lifetime.Token;
-        AvailableUpdate? available = null;
         Func<string> status = () => "";
-        bool installing = false;
+        AvailableUpdate? available = null;
         bool checking = false;
         int manualHeight = 0;
         void ShowManual(bool show)
@@ -1011,69 +1008,53 @@ internal sealed class MainForm : Form
         {
             versionLabel.Text = Say("Версия ", "Version ") + version.ToString(3);
             note.Text = status();
-            check.Text = installing ? Say("Обновление…", "Updating…") :
-                checking ? Say("Проверяем…", "Checking…") :
-                available is not null ? Say("Обновить сейчас", "Update now") : Say("Проверить обновления", "Check for updates");
+            check.Text = checking ? Say("Проверяем…", "Checking…") :
+                available is null ? Say("Проверить обновления", "Check for updates") : Say("Обновить", "Update");
             manual.Text = Say("Скачать вручную", "Download manually");
         }
         void ShowStatus(Func<string> message) { status = message; RefreshWords(); }
 
-        manual.Click += (_, _) =>
+        bool OpenDownload(string url)
         {
             try
             {
-                using var browser = Process.Start(new ProcessStartInfo(ReleaseUpdates.ReleasesPage) { UseShellExecute = true });
+                using var browser = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                return true;
             }
             catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
             {
                 ShowStatus(() => Say("Не удалось открыть GitHub.", "Could not open GitHub."));
+                return false;
             }
-        };
+        }
+        manual.Click += (_, _) => OpenDownload(ReleaseUpdates.ReleasesPage);
         check.Click += async (_, _) =>
         {
+            if (available is not null)
+            {
+                if (OpenDownload(available.Download.AbsoluteUri))
+                    ShowStatus(() => Say("Откройте скачанный установщик.", "Open the downloaded installer."));
+                return;
+            }
             check.Enabled = false;
             ShowManual(false);
             try
             {
+                checking = true;
+                ShowStatus(() => Say("Проверка последнего релиза GitHub…", "Checking the latest GitHub release…"));
+                var lookup = ReleaseUpdates.CheckAsync(version, token);
+                await Task.WhenAll(lookup, Task.Delay(1100, token));
+                available = await lookup;
+                if (dialog.IsDisposed)
+                    return;
                 if (available is null)
                 {
-                    checking = true;
-                    ShowStatus(() => Say("Проверка последнего релиза GitHub…", "Checking the latest GitHub release…"));
-                    var lookup = ReleaseUpdates.CheckAsync(version, token);
-                    await Task.WhenAll(lookup, Task.Delay(1100, token));
-                    available = await lookup;
-                    if (dialog.IsDisposed)
-                        return;
-                    var found = available?.Version.ToString(3);
-                    ShowStatus(() => found is null ? Say("Установлена актуальная версия.", "NetSwitch Pro is up to date.") :
-                        Say("Доступно обновление NetSwitch Pro ", "NetSwitch Pro update available: ") + found);
-                    if (available is not null && !await Task.Run(() => UpdatePublisher.IsTrusted(Application.ExecutablePath), token))
-                    {
-                        if (dialog.IsDisposed)
-                            return;
-                        ShowStatus(() => Say("Версия " + found + " доступна для ручной загрузки.",
-                            "Version " + found + " is available for manual download."));
-                        ShowManual(true);
-                        available = null;
-                    }
+                    ShowStatus(() => Say("Установлена актуальная версия.", "NetSwitch Pro is up to date."));
                     return;
                 }
 
-                installing = true;
-                ShowStatus(() => Say("Подготовка загрузки…", "Preparing download…"));
-                var progress = new Progress<int>(percent =>
-                {
-                    if (!dialog.IsDisposed)
-                        ShowStatus(() => Say("Загрузка ", "Downloading ") + percent + "%");
-                });
-                string executable = await ReleaseUpdates.DownloadAsync(available, progress, token);
-                token.ThrowIfCancellationRequested();
-                ShowStatus(() => Say("Завершение обновления…", "Finishing update…"));
-                using var child = Process.Start(new ProcessStartInfo(executable, ReleaseUpdates.InstallArgument) { UseShellExecute = false })
-                    ?? throw new IOException("Windows did not start the update.");
-                await child.WaitForExitAsync(token);
-                if (!token.IsCancellationRequested)
-                    throw new IOException("The update closed before the current application could finish its handoff.");
+                var next = available.Version.ToString(3);
+                ShowStatus(() => Say($"Доступна версия {next}.", $"Version {next} is available."));
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }
             catch (Exception error) when (error is IOException or InvalidDataException or System.Net.Http.HttpRequestException or System.Text.Json.JsonException
@@ -1081,17 +1062,14 @@ internal sealed class MainForm : Form
             {
                 if (!dialog.IsDisposed)
                 {
-                    bool failedInstallation = installing;
-                    ShowStatus(() => failedInstallation ? Say("Не удалось обновить. См. журнал.", "Update failed. See activity.") :
-                        Say("Не удалось проверить обновления.", "Could not check for updates."));
+                    ShowStatus(() => Say("Не удалось проверить обновления.", "Could not check for updates."));
                     ShowManual(true);
-                    available = null;
                     WriteJournal(note.Text, error.Message, showStatus: false);
                 }
             }
             finally
             {
-                checking = installing = false;
+                checking = false;
                 if (!dialog.IsDisposed)
                 {
                     check.Enabled = true;

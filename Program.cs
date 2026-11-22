@@ -1,6 +1,5 @@
 using System.Text.Json;
 using System.Diagnostics;
-using System.ComponentModel;
 using System.Security.Principal;
 using NetworkAdapterSwitcher.Services;
 
@@ -17,14 +16,12 @@ internal static class Program
             return;
         }
 
-        bool installUpdate = args is [ReleaseUpdates.InstallArgument];
-        if (installUpdate && !UpdatePublisher.IsTrusted(Application.ExecutablePath))
+        if (args is ["--install-update"])
             return;
-
-        RunWindow(args is [StartupRegistration.TrayArgument], installUpdate);
+        RunWindow(args is [StartupRegistration.TrayArgument]);
     }
 
-    private static void RunWindow(bool startInTray, bool installUpdate)
+    private static void RunWindow(bool startInTray)
     {
         using var identity = WindowsIdentity.GetCurrent();
         bool administrator = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
@@ -35,7 +32,7 @@ internal static class Program
         using var launch = new Mutex(false, prefix + ".launch");
         if (!RunningInstance.TryEnter(launch, TimeSpan.FromSeconds(8)))
         {
-            if (!startInTray && !installUpdate)
+            if (!startInTray)
                 ShowLaunchMessage("NetSwitch Pro is finishing another launch.", "Другой запуск NetSwitch Pro ещё выполняется.",
                     MessageBoxButtons.OK);
             return;
@@ -43,38 +40,19 @@ internal static class Program
 
         Mutex? ownership = null;
         RunningInstance? instance = null;
-        Exception? setupError = null;
         try
         {
             // A normal launch can show the elevated copy. An elevated launch replaces
             // the normal copy of the same version so changing access still works.
-            if (HandledByPeer(otherSlot, version, startInTray, installUpdate, replaceEqual: administrator && !startInTray) ||
-                HandledByPeer(ownSlot, version, startInTray, installUpdate, replaceEqual: false))
+            if (HandledByPeer(otherSlot, version, startInTray, replaceEqual: administrator && !startInTray) ||
+                HandledByPeer(ownSlot, version, startInTray, replaceEqual: false))
                 return;
 
             ownership = new Mutex(false, ownSlot);
             while (!RunningInstance.TryEnter(ownership, TimeSpan.Zero))
             {
-                if (HandledByPeer(ownSlot, version, startInTray, installUpdate, replaceEqual: false))
+                if (HandledByPeer(ownSlot, version, startInTray, replaceEqual: false))
                     return;
-            }
-
-            if (installUpdate)
-            {
-                try
-                {
-                    var installed = StartupRegistration.InstallCurrentCopy(Application.ExecutablePath);
-                    using var child = Process.Start(new ProcessStartInfo(installed) { UseShellExecute = false });
-                    if (child is not null)
-                    {
-                        ownership.ReleaseMutex();
-                        return;
-                    }
-                }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException or Win32Exception)
-                {
-                    setupError = error;
-                }
             }
 
             instance = new RunningInstance(ownSlot, version);
@@ -94,14 +72,6 @@ internal static class Program
             ApplicationConfiguration.Initialize();
             using var context = new ApplicationContext();
             using var main = new MainForm();
-            if (setupError is not null)
-                main.ReportStartupError(setupError);
-            try { StartupRegistration.UpdateForNewerVersion(Application.ExecutablePath); }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
-            {
-                main.ReportStartupError(error);
-            }
-
             void Queue(Action action)
             {
                 if (!main.IsHandleCreated || main.IsDisposed)
@@ -138,7 +108,7 @@ internal static class Program
         }
     }
 
-    private static bool HandledByPeer(string name, Version version, bool startInTray, bool quiet, bool replaceEqual)
+    private static bool HandledByPeer(string name, Version version, bool startInTray, bool replaceEqual)
     {
         while (!RunningInstance.WaitUntilFree(name, TimeSpan.Zero))
         {
@@ -149,14 +119,13 @@ internal static class Program
                     return true;
                 if (RunningInstance.WaitUntilFree(name, TimeSpan.Zero))
                     return false;
-                if (!quiet)
-                    ShowLaunchMessage("NetSwitch Pro is already running. Open it from the notification area.",
+                ShowLaunchMessage("NetSwitch Pro is already running. Open it from the notification area.",
                     "NetSwitch Pro уже запущен. Откройте его из области уведомлений.", MessageBoxButtons.OK);
                 return true;
             }
 
             if (other is not null && RunningInstance.Signal(name, ".retire") &&
-                RunningInstance.WaitUntilFree(name, TimeSpan.FromSeconds(quiet ? 70 : 12)))
+                RunningInstance.WaitUntilFree(name, TimeSpan.FromSeconds(12)))
                 return false;
 
             if (startInTray)
@@ -166,8 +135,7 @@ internal static class Program
                 return false;
             if (other is null && LegacyInstance.RequestExit(name, version))
                 return false;
-            if (!quiet)
-                RunningInstance.Signal(name, ".show");
+            RunningInstance.Signal(name, ".show");
             return true;
         }
         return false;
